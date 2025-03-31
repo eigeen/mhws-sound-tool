@@ -1,0 +1,69 @@
+
+struct PCKStringEntry {
+    uint32 offset;
+    uint32 index;
+};
+
+local char magic[4];
+magic = ReadString(FTell(), 4);
+if (magic != "AKPK") {
+    Warning("Not a pck file!");
+    return -1;
+}
+FSeek(4);
+
+struct PCKHeader {
+    uint32 headerSize;
+    uint32 unk1;
+    uint32 languageSize;
+    uint32 bnkTableSize;
+    uint32 wemTableSize;
+    uint32 unkStructSize;
+    
+    local const uint64 startPos = FTell();
+    uint32 stringCount;
+    if (stringCount) {
+        PCKStringEntry stringEntries[stringCount];
+        local int i = 0;
+        for (i = 0; i < stringCount; i++) {
+            FSeek(startPos + stringEntries[i].offset);
+            struct PCKString {
+                wstring str;
+            } pckString <optimize=false>;
+        }
+    }
+    FSeek(startPos + languageSize);
+    
+    struct BnkTable {
+        uint32 data[bnkTableSize / 4];  
+    } bnkTable;
+
+    uint32 wemCount;
+    if (wemCount) {
+        struct WemEntry {
+            uint32 id;
+            uint32 one;
+            uint32 length;
+            uint32 offset;
+            uint32 languageEnum;
+        } wemEntry[wemCount];
+    }
+
+    uint32 unkStruct[unkStructSize / 4];
+} pckHeader;
+
+struct WemData {
+    struct WemData_Data(uint32 size) {
+        byte data[size];
+    };
+
+    local int i = 0;
+    local uint32 offset = 0;
+    local uint32 length = 0;
+    for (i = 0; i < pckHeader.wemCount; i++) {
+        offset = pckHeader.wemEntry[i].offset;
+        length = pckHeader.wemEntry[i].length;
+        FSeek(offset);
+        WemData_Data data(length);
+    }
+} wemData;

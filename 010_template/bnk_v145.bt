@@ -1,0 +1,723 @@
+//------------------------------------------------
+//--- 010 Editor v14.0 Binary Template
+//
+//      File: bnk_v145.bt
+//   Authors: Eigeen
+//      Repo: https://github.com/eigeen
+//   Version: 1.0
+//   Purpose: 
+//  Category: 
+// File Mask: *.bnk
+//  ID Bytes: 42 4B 48 44
+//   History: 
+//   Credits: https://github.com/bnnm/wwiser
+//            
+//------------------------------------------------
+
+struct BKHD
+{
+    uint version;
+    uint id;
+    byte unknown[sectionLength-8];
+};
+
+struct DIDX
+{
+    struct DIDX_ENTRY
+    {
+        uint id;
+        uint offset;
+        uint length;
+    } entry[sectionLength / sizeof(DIDX_ENTRY)];
+};
+
+struct DATA_Track(int size)
+{
+    byte data[size];
+};
+
+struct DATA
+{
+    local int i = 0;
+    local const uint64 data_start_pos = FTell();
+    for (i = 0; i < sizeof(didx.entry) / sizeof(DIDX_ENTRY); i++) {
+        FSeek(data_start_pos + didx.entry[i].offset);
+        DATA_Track track(didx.entry[i].length);
+    }
+};
+
+struct NodeInitialFxParams {
+    ubyte bIsOverrideParentFX;
+    ubyte uNumFx;    
+};
+
+struct AkPropBundleElem {
+    ubyte pID;
+    uint32 pValue;
+};
+
+struct AkPropBundle {
+    ubyte cProps;
+    if (cProps) {
+        AkPropBundleElem props[cProps];
+    }
+};
+
+struct NodeInitialParams {
+    AkPropBundle akPropBundle1;
+    AkPropBundle akPropBundle2;
+};
+
+enum <ubyte> AkPathMode {
+    StepSequence = 0x0,
+    StepRandom = 0x1,
+    ContinuousSequence = 0x2,
+    ContinuousRandom = 0x3,
+    StepSequencePickNewPath = 0x4, // from tests, not in enum (~v134)
+    StepRandomPickNewPath = 0x5,   // same
+};
+
+struct AkPathVertex {
+    float VertexX;
+    float VertexY;
+    float VertexZ;
+    int32 Duration;
+};
+
+struct AkPathListItemOffset {
+    uint32 ulVerticesOffset;
+    uint32 iNumVertices;
+};
+
+struct Ak3DAutomationParams {
+    float fXRange;
+    float fYRange;
+    float fZRange;
+};
+
+struct PositioningParams {
+    ubyte uBitsPositioning;
+  
+    local byte has_positioning = uBitsPositioning & 1;
+    local byte has_3d = uBitsPositioning >> 1 & 1;
+    if (has_positioning && has_3d) {
+        ubyte uBits3d;
+    }
+
+    local byte e3DPositionType = (uBitsPositioning >> 5) & 3;
+    local byte has_automation = e3DPositionType != 0;
+    local byte has_dynamic = false;
+    if (has_dynamic) {
+        ubyte bIsDynamic;
+    }
+    if (has_automation) {
+        AkPathMode ePathMode;
+        int32 TransitionTime;
+        uint32 ulNumVertices;
+        if (ulNumVertices) {
+            AkPathVertex pVertices[ulNumVertices];
+        }
+        uint32 ulNumPlayListItem;
+        if (ulNumPlayListItem) {
+            AkPathListItemOffset pPlayListItems[ulNumPlayListItem];
+            Ak3DAutomationParams Params[ulNumPlayListItem];
+        }
+    }
+};
+
+struct AuxParams {
+    ubyte byBitVector;
+    uint32 reflectionsAuxBus;
+};
+
+struct AdvSettingsParams {
+    ubyte byBitVector;
+    ubyte eVirtualQueueBehavior;
+    uint16 u16MaxNumInstance;
+    ubyte eBelowThresholdBehavior;
+    ubyte byBitVector;
+};
+
+struct AkStatePropertyInfo {
+    ubyte PropertyId;
+    ubyte accumType;
+    ubyte inDb;
+};
+
+struct AkState {
+    uint32 ulStateID;
+    uint32 ulStateInstanceID;
+};
+
+struct AkStateGroupChunk {
+    uint32 ulStateGroupID;
+    ubyte eStateSyncType;
+    ubyte ulNumStates;
+    AkState pStates[ulNumStates];
+};
+
+struct StateChunk {
+    ubyte ulNumStateProps;
+    if (ulNumStateProps) {
+        AkStatePropertyInfo stateProps[ulNumStateProps] <optimize = false>;
+    }
+    ubyte ulNumStateGroups;
+    if (ulNumStateGroups) {
+        AkStateGroupChunk pStates[ulNumStateGroups] <optimize = false>;
+    }
+};
+
+struct AkRTPCGraphPoint {
+    float From;
+    float To;
+    uint32 Interp;
+};
+
+struct InitialRTPC_RTPC {
+    uint32 RTPCID;
+    ubyte rtpcType;
+    ubyte rtpcAccum;
+    ubyte ParamID;
+    uint32 rtpcCurveID;
+    ubyte eScaling;
+    uint16 ulSize;
+    if (ulSize) {
+        AkRTPCGraphPoint pRTPCMgr[ulSize];
+    }
+};
+
+struct InitialRTPC {
+    uint16 uNumCurves;
+    if (uNumCurves) {
+        InitialRTPC_RTPC pRTPCMgr[uNumCurves] <optimize = false>;
+    }
+};
+
+struct NodeBaseParams {
+    NodeInitialFxParams nodeInitialFxParams;
+    ubyte bIsOverrideParentMetadata;
+    ubyte uNumFx;
+    ubyte bOverrideAttachmentParams;
+    uint32 OverrideBusId;
+    uint32 DirectParentID;
+    ubyte byBitVector;
+    NodeInitialParams nodeInitialParams;
+    PositioningParams positioningParams;
+    AuxParams auxParams;
+    AdvSettingsParams advSettingsParams;
+    StateChunk stateChunk;
+    InitialRTPC initialRTPC;
+};
+
+struct Children {
+    uint32 ulNumChilds;
+    if (ulNumChilds) {
+        uint32 childrens[ulNumChilds];
+    }
+};
+
+struct AkMeterInfo {
+    double fGridPeriod;
+    double fGridOffset;
+    float fTempo;
+    ubyte uTimeSigNumBeatsBar;
+    ubyte uTimeSigBeatValue;
+};
+
+struct AkMusicMarkerWwise {
+    uint32 id;
+    double fPosition;
+    string pMarkerName;
+};
+
+struct CAkStinger {
+    uint32 TriggerID;
+    uint32 SegmentID;
+    uint32 SyncPlayAt;
+    uint32 uCueFilterHash;
+    int32 DontRepeatTime;
+    uint32 numSegmentLookAhead;
+};
+
+struct MusicNodeParams {
+    ubyte uFlags;
+    NodeBaseParams nodeBaseParams;
+    Children children;
+    AkMeterInfo akMeterInfo;
+    ubyte bMeterInfoFlag;
+    uint32 NumStingers;
+    if (NumStingers) {
+        CAkStinger pStingers[NumStingers];
+    }
+};
+
+struct MusicSegmentInitialValues {
+    MusicNodeParams musicNodeParams;
+    double fDuration;
+    uint32 ulNumMarkers;
+    if (ulNumMarkers > 0) {
+        AkMusicMarkerWwise pArrayMarkers[ulNumMarkers] <optimize=false>;    
+    }
+};
+
+struct AkMediaInformation {
+    uint32 sourceID;
+    uint32 uInMemoryMediaSize;
+    ubyte uSourceBits;
+};
+
+struct AkBankSourceData {
+    uint32 ulPluginID;
+    ubyte StreamType;
+    AkMediaInformation akMediaInformation;
+};
+
+struct AkTrackSrcInfo {
+    uint32 trackID;
+    uint32 sourceID;
+    uint32 eventID;
+    double fPlayAt;
+    double fBeginTrimOffset;
+    double fEndTrimOffset;
+    double fSrcDuration;
+};
+
+struct AkClipAutomation {
+    uint32 uClipIndex;
+    uint32 eAutoType;
+    uint32 uNumPoints;
+    if (uNumPoints) {
+        AkRTPCGraphPoint pArrayGraphPoints[uNumPoints];
+    }
+};
+
+enum <ubyte> AkMusicTrackType {
+    Normal = 0x0,
+    Random = 0x1,
+    Sequence = 0x2,
+    Switch = 0x3
+};
+
+struct TrackSwitchAssoc {
+    uint32 ulSwitchAssoc;
+};
+
+struct SwitchParams {
+    ubyte eGroupType;
+    uint32 uGroupID;
+    uint32 uDefaultSwitch;
+    uint32 numSwitchAssoc;
+    if (numSwitchAssoc) {
+        TrackSwitchAssoc arSwitchAssoc[numSwitchAssoc];
+    }
+};
+
+struct FadeParams {
+    int32 transitionTime;
+    uint32 eFadeCurve;
+    int32 iFadeOffset;
+};
+
+struct TransParams {
+    FadeParams srcFadeParams;
+    uint32 eSyncType;
+    uint32 uCueFilterHash;
+    FadeParams destFadeParams;
+};
+
+struct MusicTrackInitialValues {
+    ubyte uFlags;
+    uint32 numSources;
+    if (numSources) {
+        AkBankSourceData pSource[numSources];
+    }
+    uint32 numPlaylistItem;
+    if (numPlaylistItem) {
+        AkTrackSrcInfo pPlaylist[numPlaylistItem];
+        uint32 numSubTrack;
+    }
+    uint32 numClipAutomationItem;
+    if (numClipAutomationItem) {
+        AkClipAutomation pItems[numClipAutomationItem] <optimize=false>;
+    }
+    NodeBaseParams nodeBaseParams;
+    AkMusicTrackType eTrackType;
+    if (eTrackType == 0x3) {
+        SwitchParams switchParams;
+        TransParams transParams;
+    }
+    int32 iLookAheadTime;
+};
+
+enum <ubyte> HIRC_EntryType
+{
+    Settings = 1,
+    Sound = 2,
+    EventAction = 3,
+    Event = 4,
+    RandomOrSequenceContainer = 5,
+    SwitchContainer = 6,
+    ActorMixer = 7,
+    AudioBus = 8,
+    BlendContainer = 9,
+    MusicSegment = 10,
+    MusicTrack = 11,
+    MusicSwitchContainer = 12,
+    MusicPlaylistContainer = 13,
+    Attenuation = 14,
+    DialogueEvent = 15,
+    MotionBus = 16,
+    MotionFx = 17,
+    Effect = 18,
+    Unknown = 19,
+    AuxiliaryBus = 20
+};
+
+enum <uint> HIRC_Sound_StorageType
+{
+    Embedded = 0,
+    Streamed = 1,
+    StreamedPrefetched = 2
+};
+
+enum <ubyte> HIRC_Sound_SoundType
+{
+    SFX = 0,
+    Voice = 1
+};
+
+struct HIRC_UNK
+{
+    uint length;
+    byte data[length];
+};
+
+struct HIRC_Settings
+{
+    uint length;
+    byte data[length];
+};
+
+struct HIRC_Sound
+{
+    uint length;
+    uint id;
+    uint _unk1;
+    ubyte _unk2;
+    uint state;
+    uint audioId;
+    uint sourceId;
+    HIRC_Sound_SoundType soundType;
+    uint _unk3;
+    ubyte _unk4;
+    uint gameObjectId;
+    byte data[length - 31];
+
+};
+
+enum <ubyte> HIRC_EventActionScope
+{
+    SwitchOrTrigger = 1,
+    Global = 2,
+    GameObject = 3,
+    State = 4,
+    All = 5,
+    AllExcept = 6
+};
+
+enum <ubyte> HIRC_EventActionType
+{
+    Stop = 1,
+    Pause = 2,
+    Resume = 3,
+    Play = 4,
+    Trigger = 5,
+    Mute = 6,
+    UnMute = 7,
+    SetVoicePitch = 8,
+    ResetVoicePitch = 9,
+    SetVpoceVolume = 10,
+    ResetVoiceVolume = 11,
+    SetBusVolume = 12,
+    ResetBusVolume = 13,
+    SetVoiceLowPassFilter = 14,
+    ResetVoiceLowPassFilter = 15,
+    EnableState = 16,
+    DisableState = 17,
+    SetState = 18,
+    SetGameParameter = 19,
+    ResetGameParameter = 20,
+    SetSwitch = 21,
+    ToggleBypass = 22,
+    ResetBypassEffect = 23,
+    Break = 24,
+    Seek = 25
+};
+
+enum <ubyte> HIRC_EventActionParameterType
+{
+    Delay = 0x0E,
+    ParamPlay = 0x0F,
+    Probability = 0x10
+};
+
+struct HIRC_EventAction
+{
+    uint length;
+    uint id;
+    HIRC_EventActionScope scope;
+    HIRC_EventActionType actionType;
+    uint gameObjectId;
+    byte _null<hidden=true>;
+    byte parameterCount;
+    if (parameterCount) {
+        HIRC_EventActionParameterType parameterTypes[parameterCount];
+        byte parameters[parameterCount];
+    }
+    byte _null<hidden=true>;
+    if (actionType == 12) // Set State
+    {
+        uint stateGroupId;
+        uint stateId;
+    }
+    else if (actionType == 19) // Set Switch
+    {
+        uint switchGroupId;
+        uint groupId;
+        byte data[length - 21];
+    }
+    else
+    {
+        local int size = length - 13 - (sizeof(byte) * parameterCount * 2);
+        if (size > 0) {
+            byte _unknown[size];
+        }
+    }
+};
+
+struct HIRC_Event
+{
+    uint length;
+    uint id;
+    if (bankVersion >= 134)
+        byte actionCount;
+    else
+        uint actionCount;
+    if (actionCount) {
+        uint actionIds[actionCount];
+    }
+};
+struct HIRC_RandomOrSequenceContainer
+{
+    uint length;
+    byte data[length];
+};
+struct HIRC_SwitchContainer
+{
+    uint length;
+    byte data[length];
+};
+struct HIRC_ActorMixer
+{
+    uint length;
+    byte data[length];
+};
+struct HIRC_AudioBus
+{
+    uint length;
+    byte data[length];
+};
+struct HIRC_BlendContainer
+{
+    uint length;
+    byte data[length];
+};
+struct HIRC_MusicSegment
+{
+    uint length;
+    uint id;
+    MusicSegmentInitialValues musicSegmentInitialValues;
+};
+struct HIRC_MusicTrack
+{
+    uint length;
+    uint id;
+    MusicTrackInitialValues musicTrackInitialValues;
+};
+struct HIRC_MusicSwitchContainer
+{
+    uint length;
+    byte data[length];
+};
+struct HIRC_MusicPlaylistContainer
+{
+    uint length;
+    byte data[length];
+};
+struct HIRC_Attenuation
+{
+    uint length;
+    byte data[length];
+};
+struct HIRC_DialogueEvent
+{
+    uint length;
+    byte data[length];
+};
+struct HIRC_MotionBus
+{
+    uint length;
+    byte data[length];
+};
+struct HIRC_MotionFx
+{
+    uint length;
+    byte data[length];
+};
+struct HIRC_Effect
+{
+    uint length;
+    byte data[length];
+};
+struct HIRC_Unknown
+{
+    uint length;
+    byte data[length];
+};
+struct HIRC_AuxiliaryBus
+{
+    uint length;
+    byte data[length];
+};
+
+struct HIRC
+{
+    local uint i = 0;
+    uint count;
+
+    for( i = 0; i < count; i++ )
+    {
+        HIRC_EntryType type<hidden=true>; 
+        switch(type)
+        {
+            case Settings:
+                HIRC_Settings entry<name="Settings">;
+                break;
+            case Sound:
+                HIRC_Sound entry<name="Sound">;
+                break;
+            case EventAction:
+                HIRC_EventAction entry<name="EventAction">;
+                break;
+            case Event:
+                HIRC_Event entry<name="Event">;
+                break;
+            case RandomOrSequenceContainer:
+                HIRC_RandomOrSequenceContainer entry<name="RandomOrSequenceContainer">;
+                break;
+            case SwitchContainer:
+                HIRC_SwitchContainer entry<name="SwitchContainer">;
+                break;
+            case ActorMixer:
+                HIRC_ActorMixer entry<name="ActorMixer">;
+                break;
+            case AudioBus:
+                HIRC_AudioBus entry<name="AudioBus">;
+                break;
+            case BlendContainer:
+                HIRC_BlendContainer entry<name="BlendContainer">;
+                break;
+            case MusicSegment:
+                HIRC_MusicSegment entry<name="MusicSegment">;
+                break;
+            case MusicTrack:
+                HIRC_MusicTrack entry<name="MusicTrack">;
+                break;
+            case MusicSwitchContainer:
+                HIRC_MusicSwitchContainer entry<name="MusicSwitchContainer">;
+                break;
+            case MusicPlaylistContainer:
+                HIRC_MusicPlaylistContainer entry<name="MusicPlaylistContainer">;
+                break;
+            case Attenuation:
+                HIRC_Attenuation entry<name="Attenuation">;
+                break;
+            case DialogueEvent:
+                HIRC_DialogueEvent entry<name="DialogueEvent">;
+                break;
+            case MotionBus:
+                HIRC_MotionBus entry<name="MotionBus">;
+                break;
+            case MotionFx:
+                HIRC_MotionFx entry<name="MotionFx">;
+                break;
+            case Effect:
+                HIRC_Effect entry<name="Effect">;
+                break;
+            case Unknown:
+                HIRC_Unknown entry<name="Unknown">;
+                break;
+            case AuxiliaryBus:
+                HIRC_AuxiliaryBus entry<name="AuxiliaryBus">;
+                break;
+            default:         
+                HIRC_UNK entry<name="UNKNOWN">;
+                break;
+        } 
+    }
+};
+
+struct STID_ENTRY
+{
+    uint id;
+    ubyte length;
+    char name[length];
+};
+
+struct STID
+{
+    uint one;
+    uint count;
+    STID_ENTRY entries[count]<optimize=false>;
+};
+
+struct UNK
+{
+    byte data[sectionLength];
+};
+
+
+local char magic[4];
+local uint sectionLength;
+local uint bankVersion;
+
+while(!FEof())
+{   
+    magic = ReadString(FTell(), 4);
+    FSkip(4);
+    sectionLength = ReadUInt();
+    FSkip(4);
+    
+    switch(magic)
+    {
+        case "BKHD":
+            BKHD bkhd;
+            bankVersion = bkhd.version;
+            break;
+        case "DIDX":
+            DIDX didx;
+            break;
+        case "DATA":
+            DATA data;
+            break;
+        case "HIRC":
+            HIRC hirc;
+            break;
+        case "STID":
+            STID stid;
+            break;
+        default:         
+            UNK unk;
+            break;
+    }   
+}
