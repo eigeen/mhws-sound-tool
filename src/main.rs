@@ -451,6 +451,8 @@ fn main_entry() -> eyre::Result<()> {
                     source_file_name: path.file_name().unwrap().to_string_lossy().to_string(),
                 });
                 create_project_metadata(&output_path, &project_data)?;
+            } else {
+                eyre::bail!("Unsupported input file type: {}", path.display());
             }
         }
     }
