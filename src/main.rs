@@ -1,6 +1,8 @@
 mod bnk;
+mod ffmpeg;
 mod pck;
 mod utils;
+mod wwise;
 
 use std::{
     env,
