@@ -1,9 +1,11 @@
 use std::sync::LazyLock;
 
+use colored::Colorize;
 use eyre::Context;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+const CONFIG_PATH: &str = "config.toml";
 static GLOBAL_CONFIG: LazyLock<Mutex<Config>> = LazyLock::new(|| Mutex::new(Config::init_load()));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,13 +16,12 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn global() -> &'static Mutex<Config> {
-        &GLOBAL_CONFIG
+    fn init_load() -> Config {
+        load_config(CONFIG_PATH)
     }
 
-    fn init_load() -> Config {
-        let config_path = "config.toml";
-        load_config(config_path)
+    pub fn global() -> &'static Mutex<Config> {
+        &GLOBAL_CONFIG
     }
 
     pub fn get_bin_config(&self, name: &str) -> Option<&BinConfig> {
@@ -29,6 +30,30 @@ impl Config {
 
     pub fn get_bin_config_mut(&mut self, name: &str) -> Option<&mut BinConfig> {
         self.bin.iter_mut().find(|b| b.name == name)
+    }
+
+    pub fn set_bin_config(&mut self, name: &str, path: &str) {
+        if let Some(bin) = self.get_bin_config_mut(name) {
+            bin.path = path.to_string();
+        } else {
+            self.bin.push(BinConfig {
+                name: name.to_string(),
+                path: path.to_string(),
+                params: vec![],
+            });
+        }
+    }
+
+    pub fn try_save(&self) -> eyre::Result<()> {
+        let config_string = toml::to_string_pretty(self).context("Failed to serialize config")?;
+        std::fs::write(CONFIG_PATH, config_string).context("Failed to write config file")?;
+        Ok(())
+    }
+
+    pub fn save(&self) {
+        if let Err(e) = self.try_save() {
+            println!("{}: Failed to save config: {}", "Error".red().bold(), e);
+        }
     }
 }
 

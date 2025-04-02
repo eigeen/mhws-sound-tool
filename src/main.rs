@@ -10,17 +10,20 @@ use std::{
     env,
     fs::{self, File},
     io::{self, Read, Seek, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::LazyLock,
 };
 
 use bnk::SectionPayload;
 use colored::Colorize;
-use dialoguer::Input;
-use eyre::Context;
+use config::{BinConfig, Config};
+use dialoguer::{Input, theme::ColorfulTheme};
+use eyre::{Context, eyre};
+use ffmpeg::FFmpegCli;
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use wwise::{WwiseConsole, WwiseSource};
 
 // [001]12345678 .wem
 static REG_WEM_NAME: LazyLock<Regex> =
@@ -394,10 +397,113 @@ fn create_project_metadata(
     Ok(())
 }
 
+/// Get ffmpeg instance, from config, or update config with user input.
+fn request_ffmpeg() -> eyre::Result<FFmpegCli> {
+    let mut config = Config::global().lock();
+    if let Some(ffmpeg_config) = config.get_bin_config("ffmpeg") {
+        return FFmpegCli::new_with_path(PathBuf::from(&ffmpeg_config.path))
+            .ok_or(eyre::eyre!("FFmpeg not found"));
+    }
+
+    println!(
+        "{}: ffmpeg path is not set, please setup in config.toml.",
+        "Warning".yellow().bold()
+    );
+    let ffmpeg_path: String = Input::with_theme(&ColorfulTheme::default())
+        .show_default(true)
+        .default("ffmpeg.exe".to_string())
+        .with_prompt("Input ffmpeg path")
+        .interact_text()
+        .unwrap();
+    let ffmpeg_path = ffmpeg_path.trim_matches(['\"', '\'']);
+    let ffmpeg =
+        FFmpegCli::new_with_path(PathBuf::from(ffmpeg_path)).ok_or(eyre!("FFmpeg not found"))?;
+    config.set_bin_config("ffmpeg", ffmpeg.program_path().to_string_lossy().as_ref());
+    config.save();
+
+    Ok(ffmpeg)
+}
+
+fn request_wwise_console() -> eyre::Result<WwiseConsole> {
+    let mut config = Config::global().lock();
+    if let Some(wconsole_config) = config.get_bin_config("WwiseConsole") {
+        return Ok(WwiseConsole::new_with_path(PathBuf::from(
+            &wconsole_config.path,
+        ))?);
+    }
+
+    println!(
+        "{}: WwiseConsole path is not set, please setup in config.toml.",
+        "Warning".yellow().bold()
+    );
+    let wconsole_path: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("Input WwiseConsole.exe path")
+        .interact_text()
+        .unwrap();
+    let wconsole_path = wconsole_path.trim_matches(['\"', '\'']);
+    let wconsole = WwiseConsole::new_with_path(PathBuf::from(wconsole_path))?;
+    config.set_bin_config(
+        "WwiseConsole",
+        wconsole.program_path().to_string_lossy().as_ref(),
+    );
+    config.save();
+
+    Ok(wconsole)
+}
+
+fn single_file_to_wem(input: impl AsRef<Path>) -> eyre::Result<()> {
+    let input = input.as_ref().canonicalize().context(format!(
+        "Failed to canonicalize input path: {}",
+        input.as_ref().display()
+    ))?;
+
+    let wconsole = request_wwise_console()?;
+    let project = wconsole.acquire_temp_project()?;
+
+    let input_dir = input.parent().unwrap();
+    let input_file = input.file_name().unwrap();
+    let mut source = WwiseSource::new(input_dir.to_str().unwrap());
+    source.add_source(input_file.to_str().unwrap());
+    project.convert_external_source(&source, input_dir.to_str().unwrap())?;
+
+    // mv to root
+    let output_dir = input_dir.join("Windows");
+    for entry in output_dir.read_dir()? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            fs::copy(
+                &path,
+                input_dir.parent().unwrap().join(path.file_name().unwrap()),
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 fn main_entry() -> eyre::Result<()> {
     let args = env::args().collect::<Vec<_>>();
     if args.len() < 2 {
         eyre::bail!("Usage: {} <input> ...", args[0]);
+    }
+
+    // config init
+    {
+        let mut config = Config::global().lock();
+        if config.get_bin_config("ffmpeg").is_none() {
+            if let Ok(ffmpeg) = FFmpegCli::new() {
+                config.set_bin_config("ffmpeg", ffmpeg.program_path().to_string_lossy().as_ref());
+            }
+        }
+        if config.get_bin_config("WwiseConsole").is_none() {
+            if let Ok(wwise_console) = WwiseConsole::new() {
+                config.set_bin_config(
+                    "WwiseConsole",
+                    wwise_console.program_path().to_string_lossy().as_ref(),
+                );
+            }
+        }
     }
 
     let input_paths = args[1..].iter().map(Path::new).collect::<Vec<_>>();
@@ -445,7 +551,29 @@ fn main_entry() -> eyre::Result<()> {
                 });
                 create_project_metadata(&output_path, &project_data)?;
             } else {
-                eyre::bail!("Unsupported input file type: {}", path.display());
+                // magic not match, other file type
+                let file_ext = path.extension().unwrap_or_default().to_string_lossy();
+                match file_ext.as_ref() {
+                    "mp3" | "ogg" | "aac" => {
+                        // transcode to wav, and to wem
+                        let ffmpeg = request_ffmpeg()?;
+                        let ff_out_dir = Path::new("sound-tool-temp");
+                        if !ff_out_dir.exists() {
+                            fs::create_dir_all(ff_out_dir)?;
+                        }
+                        let ff_out_file = ff_out_dir.join(path.file_name().unwrap());
+                        ffmpeg.simple_transcode(path, &ff_out_file)?;
+                        // to wem
+                        single_file_to_wem(&ff_out_file)?;
+                    }
+                    "wav" => {
+                        // to wem
+                        single_file_to_wem(path)?;
+                    }
+                    _ => {
+                        eyre::bail!("Unsupported input file type: {}", path.display());
+                    }
+                }
             }
         }
     }

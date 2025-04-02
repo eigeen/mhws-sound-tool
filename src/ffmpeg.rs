@@ -56,15 +56,22 @@ impl FFmpegCli {
 
         for path in try_paths {
             if Self::test_ffmpeg_cli(&path) {
-                return Ok(Self::new_with_path(path));
+                return Ok(Self { program_path: path });
             };
         }
 
         Err(FFmpegError::FFmpegNotFound)
     }
 
-    pub fn new_with_path(program_path: PathBuf) -> Self {
-        Self { program_path }
+    pub fn new_with_path(program_path: PathBuf) -> Option<Self> {
+        if !Self::test_ffmpeg_cli(&program_path) {
+            return None;
+        }
+        Some(Self { program_path })
+    }
+
+    pub fn program_path(&self) -> &Path {
+        self.program_path.as_ref()
     }
 
     /// Simple transcode, only provide input and output file path.

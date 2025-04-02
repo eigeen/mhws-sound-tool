@@ -102,7 +102,18 @@ impl WwiseConsole {
         if !console_path.exists() {
             return Err(WwiseError::WwiseConsoleNotFound);
         }
+        if !Self::test_console(&console_path) {
+            return Err(WwiseError::Assertion(format!(
+                "Found console but failed to test: {}",
+                console_path.display()
+            )));
+        }
+
         Ok(Self { console_path })
+    }
+
+    pub fn program_path(&self) -> &Path {
+        &self.console_path
     }
 
     pub fn acquire_temp_project(&self) -> Result<WwiseProject> {
@@ -194,22 +205,25 @@ impl<'a> WwiseProject<'a> {
         }
     }
 
+    pub fn project_path(&self) -> &Path {
+        &self.project_path
+    }
+
     pub fn convert_external_source(
         &self,
         wsource: &WwiseSource,
-        output: impl AsRef<str>,
+        output_dir: impl AsRef<str>,
     ) -> Result<()> {
         let xml = wsource.to_xml();
         // write to temp file
         let source_file_name = "list.wsource";
         let source_file_path = self.project_path.parent().unwrap().join(source_file_name);
         {
-            println!("Writing source file: {}", source_file_path.display());
             let mut file = fs::File::create(&source_file_path)?;
             file.write_all(xml.as_bytes())?;
         }
 
-        let output_path = output.as_ref().replace("/", "\\");
+        let output_path = output_dir.as_ref().replace("/", "\\").replace(r"\\?\", "");
         let result = Command::new(&self.console.console_path)
             .args([
                 "convert-external-source",
@@ -241,7 +255,7 @@ pub struct WwiseSource {
 
 impl WwiseSource {
     pub fn new(root: impl AsRef<str>) -> Self {
-        let root = root.as_ref().replace("/", "\\");
+        let root = root.as_ref().replace("/", "\\").replace(r"\\?\", "");
         Self {
             root,
             sources: vec![],
@@ -249,7 +263,7 @@ impl WwiseSource {
     }
 
     pub fn add_source(&mut self, source: impl AsRef<str>) {
-        let source = source.as_ref().replace("/", "\\");
+        let source = source.as_ref().replace("/", "\\").replace(r"\\?\", "");
         self.sources.push(source);
     }
 
