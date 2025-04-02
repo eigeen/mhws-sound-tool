@@ -1,4 +1,6 @@
 mod bnk;
+mod cmd;
+mod config;
 mod ffmpeg;
 mod pck;
 mod utils;
@@ -399,17 +401,6 @@ fn main_entry() -> eyre::Result<()> {
     }
 
     let input_paths = args[1..].iter().map(Path::new).collect::<Vec<_>>();
-
-    // let output_path: String = Input::with_theme(&ColorfulTheme::default())
-    //     .show_default(true)
-    //     .default(".".to_string())
-    //     .with_prompt("请输入输出目录")
-    //     .interact_text()
-    //     .unwrap();
-    // let output_path = Path::new(&output_path);
-    // if !output_path.exists() {
-    //     fs::create_dir_all(output_path)?;
-    // }
 
     for path in input_paths {
         if !path.exists() {
