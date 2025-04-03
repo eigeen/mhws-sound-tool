@@ -5,6 +5,8 @@ use eyre::Context;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use crate::{ffmpeg::FFmpegCli, wwise::WwiseConsole};
+
 const CONFIG_PATH: &str = "config.toml";
 static GLOBAL_CONFIG: LazyLock<Mutex<Config>> = LazyLock::new(|| Mutex::new(Config::init_load()));
 
@@ -18,6 +20,24 @@ pub struct Config {
 impl Config {
     fn init_load() -> Config {
         load_config(CONFIG_PATH)
+    }
+
+    pub fn initialize() -> eyre::Result<()> {
+        let mut config = Config::global().lock();
+        if config.get_bin_config("ffmpeg").is_none() {
+            if let Ok(ffmpeg) = FFmpegCli::new() {
+                config.set_bin_config("ffmpeg", ffmpeg.program_path().to_string_lossy().as_ref());
+            }
+        }
+        if config.get_bin_config("WwiseConsole").is_none() {
+            if let Ok(wwise_console) = WwiseConsole::new() {
+                config.set_bin_config(
+                    "WwiseConsole",
+                    wwise_console.program_path().to_string_lossy().as_ref(),
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn global() -> &'static Mutex<Config> {

@@ -1,408 +1,402 @@
 mod bnk;
-mod cmd;
 mod config;
 mod ffmpeg;
 mod pck;
+mod project;
 mod utils;
 mod wwise;
 
 use std::{
-    env,
-    fs::{self, File},
-    io::{self, Read, Seek, Write},
+    env, fs,
+    io::Read,
     path::{Path, PathBuf},
-    sync::LazyLock,
+    sync::atomic::{self, AtomicBool},
 };
 
-use bnk::SectionPayload;
+use clap::Parser;
 use colored::Colorize;
-use config::{BinConfig, Config};
+use config::Config;
 use dialoguer::{Input, theme::ColorfulTheme};
 use eyre::{Context, eyre};
 use ffmpeg::FFmpegCli;
-use indexmap::IndexMap;
-use regex::Regex;
-use serde::{Deserialize, Serialize};
-use wwise::{WwiseConsole, WwiseSource};
+use project::SoundToolProject;
+use wwise::{WwiseConsole, WwiseProject, WwiseSource};
 
-// [001]12345678 .wem
-static REG_WEM_NAME: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\[(\d{3,4})\](\d+)").unwrap());
+static INTERACTIVE_MODE: AtomicBool = AtomicBool::new(true);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum SoundToolProject {
-    Bnk(BnkProject),
-    Pck(PckProject),
+#[derive(Debug, Parser)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+    /// No interactive mode, so that the program
+    /// won't block waiting for user input.
+    #[arg(long, default_value = "false")]
+    no_interact: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct BnkProject {
-    metadata_file: String,
-    source_file_name: String,
+#[derive(Debug, clap::Subcommand)]
+enum Command {
+    PackageProject(CmdPackageProject),
+    UnpackBundle(CmdUnpackBundle),
+    SoundToWem(CmdSoundToWem),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PckProject {
-    metadata_file: String,
-    source_file_name: String,
+#[derive(Debug, clap::Args)]
+struct CmdPackageProject {
+    /// Input project directory path.
+    #[arg(short, long)]
+    input: String,
+    /// Output root path.
+    #[arg(short, long)]
+    output: Option<String>,
 }
 
-fn dump_bank(bank: &bnk::Bnk, output_path: impl AsRef<Path>) -> eyre::Result<()> {
-    let mut didx_entries = vec![];
+#[derive(Debug, clap::Args)]
+struct CmdUnpackBundle {
+    /// Input bundle file path.
+    ///
+    /// Support BNK and PCK formats.
+    #[arg(short, long)]
+    input: String,
+    /// Output root path.
+    #[arg(short, long)]
+    output: Option<String>,
+}
 
-    for section in &bank.sections {
-        match &section.payload {
-            SectionPayload::Didx { entries } => {
-                didx_entries = entries.clone();
+#[derive(Debug, clap::Args)]
+struct CmdSoundToWem {
+    /// Input sound file path.
+    ///
+    /// Support WAV, OGG, AAC, FLAC, MP3 formats.
+    #[arg(short, long)]
+    input: Vec<String>,
+    /// Output directory path.
+    ///
+    /// The output file name will be the same as the input file name,
+    /// with the extension changed to .wem
+    #[arg(short, long)]
+    output: Option<String>,
+    /// WwiseConsole program path.
+    #[arg(long)]
+    wwise_console: String,
+    /// FFmpeg program path.
+    ///
+    /// If input files contain non-wav format,
+    /// this option is required.
+    #[arg(long)]
+    ffmpeg: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputFileType {
+    Project,
+    GeneralAudio(&'static str),
+    Wem,
+    Bnk,
+    Pck,
+}
+
+impl InputFileType {
+    pub fn from_path(path: impl AsRef<Path>) -> Option<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return None;
+        }
+        if path.is_dir() {
+            // check project.json
+            if path.join("project.json").is_file() {
+                return Some(InputFileType::Project);
+            } else {
+                return None;
             }
-            SectionPayload::Data { data_list } => {
-                if didx_entries.is_empty() {
-                    eyre::bail!("DIDX section must before DATA section.")
-                }
-                data_list
+        }
+
+        // ext check
+        let file_ext = path.extension().and_then(|ext| ext.to_str())?;
+        let result = match file_ext {
+            "wav" => Some(InputFileType::GeneralAudio("wav")),
+            "ogg" => Some(InputFileType::GeneralAudio("ogg")),
+            "aac" => Some(InputFileType::GeneralAudio("aac")),
+            "flac" => Some(InputFileType::GeneralAudio("flac")),
+            "mp3" => Some(InputFileType::GeneralAudio("mp3")),
+            _ => None,
+        };
+        if result.is_some() {
+            return result;
+        }
+
+        // magic check
+        let mut magic = [0; 4];
+        let mut file = std::fs::File::open(path).ok()?;
+        file.read_exact(&mut magic).ok()?;
+        match &magic {
+            b"BKHD" => Some(InputFileType::Bnk),
+            b"AKPK" => Some(InputFileType::Pck),
+            b"RIFF" => Some(InputFileType::Wem),
+            _ => None,
+        }
+    }
+
+    #[allow(clippy::match_like_matches_macro)]
+    pub fn similar_to(&self, other: &Self) -> bool {
+        match (self, other) {
+            (InputFileType::GeneralAudio(_), InputFileType::GeneralAudio(_)) => true,
+            (InputFileType::Wem, InputFileType::Wem) => true,
+            (InputFileType::Bnk, InputFileType::Bnk) => true,
+            (InputFileType::Pck, InputFileType::Pck) => true,
+            _ => false,
+        }
+    }
+}
+
+fn main() -> eyre::Result<()> {
+    println!(
+        "{} v{}{}",
+        "MHWS Sound Tool".magenta().bold(),
+        env!("CARGO_PKG_VERSION"),
+        " - by @Eigeen".dimmed()
+    );
+
+    if let Err(e) = main_entry() {
+        println!("{}{:#}", "Error: ".red().bold(), e);
+    }
+    wait_for_exit();
+
+    Ok(())
+}
+
+fn main_entry() -> eyre::Result<()> {
+    // config init
+    Config::initialize().context("Failed to initialize config")?;
+
+    // drag and drop support, try to detect if all params are file paths
+    let args = env::args().collect::<Vec<_>>();
+    if args.len() < 2 {
+        eyre::bail!("Usage: {} <input> ...", args[0]);
+    }
+
+    let mut input_paths = vec![];
+    for path in args.iter().skip(1) {
+        let path = Path::new(path);
+        if !path.exists() {
+            break;
+        }
+        input_paths.push(path);
+    }
+
+    if input_paths.len() != args.len() - 1 {
+        // not all params are file paths, use cli parser
+        let cli = Cli::parse();
+        return cli_main(&cli);
+    }
+
+    // direct input mode
+    let file_types = input_paths
+        .iter()
+        .map(InputFileType::from_path)
+        .collect::<Vec<_>>();
+    // require all same known file type
+    if file_types.iter().any(|t| t.is_none()) {
+        eyre::bail!("Input paths contain unsupported file type");
+    }
+    let file_type = file_types[0].as_ref().unwrap();
+    for t in file_types.iter().skip(1) {
+        let t = t.as_ref().unwrap();
+        if !t.similar_to(file_type) {
+            eyre::bail!("Input paths must be of the same type");
+        }
+    }
+    // build cli args
+    match file_type {
+        InputFileType::Project => {
+            for input in input_paths {
+                let cmd = Command::PackageProject(CmdPackageProject {
+                    input: input.to_string_lossy().to_string(),
+                    output: None,
+                });
+                let cli = Cli {
+                    command: cmd,
+                    no_interact: false,
+                };
+                cli_main(&cli)?;
+            }
+        }
+        InputFileType::GeneralAudio(_) => {
+            let cmd = Command::SoundToWem(CmdSoundToWem {
+                input: input_paths
                     .iter()
-                    .enumerate()
-                    .zip(didx_entries.iter())
-                    .try_for_each(|((idx, data), entry)| -> eyre::Result<()> {
-                        let file_name = if didx_entries.len() < 1000 {
-                            format!("[{:03}]{}.wem", idx, entry.id)
-                        } else {
-                            format!("[{:04}]{}.wem", idx, entry.id)
-                        };
-                        let file_path = output_path.as_ref().join(file_name);
-                        println!("{}: {}", "Wem".green().dimmed(), file_path.display());
-                        let mut file = File::create(&file_path)
-                            .context("Failed to create wem output file")
-                            .context(format!("Path: {}", file_path.display()))?;
-                        file.write_all(data)
-                            .context("Failed to write wem data to file")?;
-                        Ok(())
-                    })?;
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect(),
+                output: None,
+                ffmpeg: None,
+                wwise_console: "".to_string(),
+            });
+            let cli = Cli {
+                command: cmd,
+                no_interact: false,
+            };
+            cli_main(&cli)?;
+        }
+        InputFileType::Bnk | InputFileType::Pck => {
+            for input in input_paths {
+                let cmd = Command::UnpackBundle(CmdUnpackBundle {
+                    input: input.to_string_lossy().to_string(),
+                    output: None,
+                });
+                let cli = Cli {
+                    command: cmd,
+                    no_interact: false,
+                };
+                cli_main(&cli)?;
             }
-            _ => {}
         }
-    }
-
-    // 导出其余部分
-    let mut meta_bank = bank.clone();
-    meta_bank.sections.retain(|sec| {
-        !matches!(
-            &sec.payload,
-            SectionPayload::Didx { .. } | SectionPayload::Data { .. }
-        )
-    });
-    let meta_bank_path = output_path.as_ref().join("bank.json");
-    println!(
-        "{}: {}",
-        "Metadata".green().dimmed(),
-        meta_bank_path.display()
-    );
-    let mut meta_bank_file = File::create(&meta_bank_path)
-        .context("Failed to create bank meta file")
-        .context(format!("Path: {}", meta_bank_path.display()))?;
-    let mut writer = io::BufWriter::new(&mut meta_bank_file);
-    serde_json::to_writer(&mut writer, &meta_bank).context("Failed to write bank meta to file")?;
+        _ => {
+            eyre::bail!("Unsupported input file type {:?}", file_type);
+        }
+    };
 
     Ok(())
 }
 
-fn dump_pck<R>(mut reader: R, output_path: impl AsRef<Path>) -> eyre::Result<()>
-where
-    R: Read + Seek,
-{
-    let pck = pck::PckHeader::from_reader(&mut reader)?;
-    for i in 0..pck.wem_entries.len() {
-        let entry = &pck.wem_entries[i];
-        let file_name = if pck.wem_entries.len() < 1000 {
-            format!("[{:03}]{}.wem", i, entry.id)
-        } else {
-            format!("[{:04}]{}.wem", i, entry.id)
-        };
-        let file_path = output_path.as_ref().join(file_name);
-        println!("{}: {}", "Wem".green().dimmed(), file_path.display());
-        let mut file = File::create(&file_path)
-            .context("Failed to create wem output file")
-            .context(format!("Path: {}", file_path.display()))?;
-
-        let mut wem_reader = pck.wem_reader(&mut reader, i).unwrap();
-        io::copy(&mut wem_reader, &mut file).context("Failed to write wem data to file")?;
+fn cli_main(cli: &Cli) -> eyre::Result<()> {
+    if cli.no_interact {
+        INTERACTIVE_MODE.store(false, atomic::Ordering::SeqCst);
     }
+    match &cli.command {
+        Command::PackageProject(cmd) => {
+            println!("{}: {}", "Input".green().bold(), cmd.input);
+            if let Some(output) = &cmd.output {
+                println!("{}: {}", "Output".green().bold(), output);
+            }
+            let project =
+                SoundToolProject::from_path(&cmd.input).context("Failed to load project")?;
 
-    // 导出其余部分
-    let meta_pck_path = output_path.as_ref().join("pck.json");
-    println!(
-        "{}: {}",
-        "Metadata".green().dimmed(),
-        meta_pck_path.display()
-    );
-    let mut meta_pck_file = File::create(&meta_pck_path)
-        .context("Failed to create pck meta file")
-        .context(format!("Path: {}", meta_pck_path.display()))?;
-    let mut writer = io::BufWriter::new(&mut meta_pck_file);
-    serde_json::to_writer(&mut writer, &pck).context("Failed to write pck meta to file")?;
-
-    println!("{}: {}", "Export".cyan(), output_path.as_ref().display());
-
-    Ok(())
-}
-
-/// 解析Wem名，返回 (index, id)
-fn parse_wem_name(name: &str) -> eyre::Result<(u32, u32)> {
-    let name = name.trim();
-    if let Some(captures) = REG_WEM_NAME.captures(name) {
-        let idx = captures.get(1).and_then(|m| m.as_str().parse::<u32>().ok());
-        let id = captures.get(2).and_then(|m| m.as_str().parse::<u32>().ok());
-        let Some(id) = id else {
-            eyre::bail!("Bad Wem file name, cannot parse Wem id. {}", name)
-        };
-        Ok((idx.unwrap_or(u32::MAX), id))
-    } else {
-        eyre::bail!("Bad Wem file name. {}", name)
-    }
-}
-
-fn package_bank(
-    project: &BnkProject,
-    project_path: impl AsRef<Path>,
-    output_root: impl AsRef<Path>,
-) -> eyre::Result<()> {
-    let project_path = project_path.as_ref();
-    let output_root = output_root.as_ref();
-
-    let bank_meta_path = project_path.join(&project.metadata_file);
-    if !bank_meta_path.is_file() {
-        eyre::bail!("Bnk metadata file not found: {}", bank_meta_path.display())
-    }
-    let bank_meta_content = fs::read_to_string(&bank_meta_path)?;
-    let mut bank: bnk::Bnk = serde_json::from_str(&bank_meta_content)?;
-
-    // 导出bnk
-    // 读取wem
-    let mut wem_files = vec![];
-    for entry in fs::read_dir(project_path)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() || path.extension().unwrap_or_default() != "wem" {
-            continue;
+            let output_root = cmd.output.as_ref().map(PathBuf::from).unwrap_or_else(|| {
+                Path::new(&cmd.input)
+                    .parent()
+                    .unwrap_or_else(|| {
+                        let input_dir = Path::new(&cmd.input).parent().unwrap_or(Path::new("."));
+                        input_dir
+                    })
+                    .to_path_buf()
+            });
+            project
+                .repack(&output_root)
+                .context("Failed to repack project")?;
         }
+        Command::UnpackBundle(cmd) => {
+            let input = Path::new(&cmd.input);
+            if !input.is_file() {
+                eyre::bail!("Input file not found: {}", input.display())
+            }
+            println!("{}: {}", "Input".green().bold(), input.display());
+            if let Some(output) = &cmd.output {
+                println!("{}: {}", "Output".green().bold(), output);
+            }
+            let output_root = cmd
+                .output
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| input.parent().unwrap_or(Path::new(".")).to_path_buf());
 
-        // 解析wem文件名
-        struct WemInfo {
-            idx: u32,
-            id: u32,
-            data: Vec<u8>,
+            let file_type = InputFileType::from_path(&cmd.input)
+                .ok_or(eyre::eyre!("Unsupported input file type"))?;
+            match file_type {
+                InputFileType::Bnk => {
+                    SoundToolProject::dump_bnk(input, &output_root).context("Failed to dump bnk")?
+                }
+                InputFileType::Pck => {
+                    SoundToolProject::dump_pck(input, &output_root).context("Failed to dump pck")?
+                }
+                other => eyre::bail!("Unsupported input file type: {:?}", other),
+            };
         }
-        let file_stem = path.file_stem().unwrap().to_string_lossy();
-        let (idx, id) = parse_wem_name(&file_stem)?;
-        let data = fs::read(path)?;
-        wem_files.push(WemInfo { idx, id, data });
-    }
+        Command::SoundToWem(cmd) => {
+            if cmd.input.is_empty() {
+                eyre::bail!("No input file specified.");
+            }
+            for input in &cmd.input {
+                println!("{}: {}", "Input".green().bold(), input);
+            }
+            if let Some(output) = &cmd.output {
+                println!("{}: {}", "Output".green().bold(), output);
+            }
+            if !cmd.wwise_console.is_empty() {
+                println!("{}: {}", "WwiseConsole".green().bold(), cmd.wwise_console);
+            }
+            if let Some(ffmpeg) = &cmd.ffmpeg {
+                println!("{}: {}", "FFmpeg".green().bold(), ffmpeg);
+            }
+            {
+                // sync config with cli args
+                let mut config = Config::global().lock();
+                if let Some(ffmpeg) = &cmd.ffmpeg {
+                    config.set_bin_config("ffmpeg", ffmpeg);
+                }
+                if !cmd.wwise_console.is_empty() {
+                    config.set_bin_config("WwiseConsole", &cmd.wwise_console);
+                }
+            }
 
-    wem_files.sort_by_key(|wem| wem.idx);
-    // 构造didx
-    let mut didx_entries = vec![];
-    let mut offset = 0;
-    for wem in &wem_files {
-        didx_entries.push(bnk::DidxEntry {
-            id: wem.id,
-            offset,
-            length: wem.data.len() as u32,
-        });
-        // no padding
-        offset += wem.data.len() as u32;
-    }
-
-    // 构造bank
-    bank.sections.insert(
-        1,
-        bnk::Section::new(SectionPayload::Didx {
-            entries: didx_entries,
-        }),
-    );
-    bank.sections.insert(
-        2,
-        bnk::Section::new(SectionPayload::Data {
-            data_list: wem_files.into_iter().map(|wem| wem.data).collect(),
-        }),
-    );
-
-    // 导出bank
-    // project dir name
-    let mut output_path = output_root
-        .join(&project.source_file_name)
-        .to_string_lossy()
-        .to_string();
-    loop {
-        if Path::new(&output_path).exists() {
-            output_path.push_str(".new");
-        } else {
-            break;
-        }
-    }
-
-    let output_file = File::create(&output_path)?;
-    let mut writer = io::BufWriter::new(output_file);
-    bank.write_to(&mut writer)?;
-
-    println!("{}: {}", "Export".cyan(), output_path);
-
-    Ok(())
-}
-
-fn package_pck(
-    project: &PckProject,
-    project_path: impl AsRef<Path>,
-    output_root: impl AsRef<Path>,
-) -> eyre::Result<()> {
-    let project_path = project_path.as_ref();
-    let output_root = output_root.as_ref();
-
-    let pck_header_path = project_path.join(&project.metadata_file);
-    if !pck_header_path.is_file() {
-        eyre::bail!("PCK metadata file not found: {}", pck_header_path.display())
-    }
-    let pck_header_content = fs::read_to_string(&pck_header_path)?;
-    let mut pck_header: pck::PckHeader = serde_json::from_str(&pck_header_content)?;
-
-    // 读取wem信息
-    struct WemMetadata {
-        idx: u32,
-        file_size: u32,
-        file_path: String,
-    }
-    let mut wem_metadata_map = IndexMap::new();
-    for entry in fs::read_dir(project_path)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() || path.extension().unwrap_or_default() != "wem" {
-            continue;
-        }
-
-        // 解析wem文件名
-        let file_stem = path.file_stem().unwrap().to_string_lossy();
-        let (idx, id) = parse_wem_name(&file_stem)?;
-        wem_metadata_map.insert(
-            id,
-            WemMetadata {
-                idx,
-                file_size: path.metadata()?.len() as u32,
-                file_path: path.to_string_lossy().to_string(),
-            },
-        );
-    }
-    wem_metadata_map.sort_unstable_by(|_, value_a, _, value_b| value_a.idx.cmp(&value_b.idx));
-    // 更新header中的原始wem entries
-    // 移除无效wem entries
-    let mut drop_idx_list = vec![];
-    for (i, entry) in pck_header.wem_entries.iter().enumerate() {
-        if !wem_metadata_map.contains_key(&entry.id) {
-            drop_idx_list.push(i);
-        }
-    }
-    for i in drop_idx_list.iter().rev() {
-        let entry = pck_header.wem_entries.remove(*i);
-        println!(
-            "{}: Wem file {} included in original PCK, but not found in project, removed.",
-            "Warning".yellow(),
-            entry.id
-        );
-    }
-    if !drop_idx_list.is_empty() {
-        println!(
-            "{}: Wem count changed, will affect the original order ID, please use Wem unique ID as reference.",
-            "Warning".yellow()
-        );
-    }
-    // 更新数据
-    let mut offset = pck_header.get_wem_offset_start();
-    for entry in pck_header.wem_entries.iter_mut() {
-        let metadata = wem_metadata_map.get(&entry.id).unwrap();
-        entry.offset = offset;
-        entry.length = metadata.file_size;
-        offset += metadata.file_size;
-    }
-
-    let mut output_path = output_root
-        .join(&project.source_file_name)
-        .to_string_lossy()
-        .to_string();
-    loop {
-        if Path::new(&output_path).exists() {
-            output_path.push_str(".new");
-        } else {
-            break;
-        }
-    }
-    // 导出pck header
-    let output_file = File::create(&output_path)?;
-    let mut writer = io::BufWriter::new(output_file);
-    pck_header.write_to(&mut writer)?;
-    // 写入wem
-    for metadata in wem_metadata_map.values() {
-        let file_path = Path::new(&metadata.file_path);
-        let mut input_file = File::open(file_path)?;
-        io::copy(&mut input_file, &mut writer)?;
-    }
-
-    println!("{}: {}", "Export".cyan(), output_path);
-
-    Ok(())
-}
-
-fn handle_project(
-    project_path: impl AsRef<Path>,
-    output_root: impl AsRef<Path>,
-) -> eyre::Result<()> {
-    let project_path = project_path.as_ref();
-
-    let project_json_path = project_path.join("project.json");
-    if !project_json_path.is_file() {
-        eyre::bail!(
-            "Project metadata file not found: {}",
-            project_json_path.display()
-        )
-    }
-    let project_content = fs::read_to_string(project_json_path)?;
-    let project: SoundToolProject =
-        serde_json::from_str(&project_content).context("Failed to parse project data")?;
-    match project {
-        SoundToolProject::Bnk(bnk_project) => {
-            package_bank(&bnk_project, project_path, output_root)
-                .context("Failed to package bank")?;
-        }
-        SoundToolProject::Pck(pck_project) => {
-            package_pck(&pck_project, project_path, output_root)
-                .context("Failed to package PCK")?;
+            let output_dir = cmd.output.as_ref().map(PathBuf::from).unwrap_or_else(|| {
+                let first_file_dir = Path::new(&cmd.input[0]).parent().unwrap_or(Path::new("."));
+                first_file_dir.to_path_buf()
+            });
+            let temp_dir = output_dir.join("temp");
+            if !temp_dir.exists() {
+                fs::create_dir_all(&temp_dir)?;
+            } else {
+                let _ = fs::remove_dir_all(&temp_dir);
+                fs::create_dir_all(&temp_dir)?;
+            }
+            // transcode to wav in temp dir
+            let mut ffmpeg = None;
+            for input in &cmd.input {
+                let input = Path::new(input);
+                if !input.is_file() {
+                    eyre::bail!("Input file not found: {}", input.display())
+                }
+                if input.extension().unwrap_or_default() == "wav" {
+                    // copy to temp dir
+                    let out_file = temp_dir.join(input.file_name().unwrap());
+                    fs::copy(input, &out_file)?;
+                } else {
+                    // transcode to wav in temp dir
+                    let ffmpeg = if let Some(ffmpeg) = &ffmpeg {
+                        ffmpeg
+                    } else {
+                        let f = require_ffmpeg()?;
+                        ffmpeg = Some(f);
+                        ffmpeg.as_ref().unwrap()
+                    };
+                    let ff_out_file_name =
+                        Path::new(input.file_name().unwrap()).with_extension("wav");
+                    let ff_out_file = temp_dir.join(ff_out_file_name);
+                    println!("Transcoding: {}", input.display());
+                    ffmpeg.simple_transcode(input, &ff_out_file)?;
+                }
+            }
+            // to wem
+            let ww_console = require_wwise_console()?;
+            let wproject = ww_console.acquire_temp_project()?;
+            files_to_wem(&wproject, &temp_dir, &output_dir)?;
+            // remove temp dir
+            let _ = fs::remove_dir_all(&temp_dir);
         }
     }
 
     Ok(())
 }
 
-fn create_project_metadata(
-    dir_path: impl AsRef<Path>,
-    data: &SoundToolProject,
-) -> eyre::Result<()> {
-    let metadata_path = dir_path.as_ref().join("project.json");
-    println!(
-        "{}: {}",
-        "Project".green().dimmed(),
-        metadata_path.display()
-    );
-    let mut project_file = File::create(&metadata_path)
-        .context("Failed to create project file")
-        .context(format!("Path: {}", metadata_path.display()))?;
-    let mut writer = io::BufWriter::new(&mut project_file);
-    serde_json::to_writer(&mut writer, &data).context("Failed to write project data to file")?;
-    Ok(())
-}
-
-/// Get ffmpeg instance, from config, or update config with user input.
-fn request_ffmpeg() -> eyre::Result<FFmpegCli> {
+/// Get ffmpeg instance from config, or update config with user input.
+fn require_ffmpeg() -> eyre::Result<FFmpegCli> {
     let mut config = Config::global().lock();
     if let Some(ffmpeg_config) = config.get_bin_config("ffmpeg") {
         return FFmpegCli::new_with_path(PathBuf::from(&ffmpeg_config.path))
             .ok_or(eyre::eyre!("FFmpeg not found"));
+    }
+    if !INTERACTIVE_MODE.load(atomic::Ordering::SeqCst) {
+        eyre::bail!("ffmpeg path is not set, and interactive mode is disabled.");
     }
 
     println!(
@@ -420,16 +414,21 @@ fn request_ffmpeg() -> eyre::Result<FFmpegCli> {
         FFmpegCli::new_with_path(PathBuf::from(ffmpeg_path)).ok_or(eyre!("FFmpeg not found"))?;
     config.set_bin_config("ffmpeg", ffmpeg.program_path().to_string_lossy().as_ref());
     config.save();
+    println!("FFmpeg path saved to config.toml.");
 
     Ok(ffmpeg)
 }
 
-fn request_wwise_console() -> eyre::Result<WwiseConsole> {
+/// Get wwise console instance from config, or update config with user input.
+fn require_wwise_console() -> eyre::Result<WwiseConsole> {
     let mut config = Config::global().lock();
     if let Some(wconsole_config) = config.get_bin_config("WwiseConsole") {
         return Ok(WwiseConsole::new_with_path(PathBuf::from(
             &wconsole_config.path,
         ))?);
+    }
+    if !INTERACTIVE_MODE.load(atomic::Ordering::SeqCst) {
+        eyre::bail!("WwiseConsole path is not set, and interactive mode is disabled.");
     }
 
     println!(
@@ -447,182 +446,66 @@ fn request_wwise_console() -> eyre::Result<WwiseConsole> {
         wconsole.program_path().to_string_lossy().as_ref(),
     );
     config.save();
+    println!("WwiseConsole path saved to config.toml.");
 
     Ok(wconsole)
 }
 
-fn single_file_to_wem(input: impl AsRef<Path>) -> eyre::Result<()> {
-    let input = input.as_ref().canonicalize().context(format!(
+fn files_to_wem(
+    wproject: &WwiseProject,
+    input_dir: impl AsRef<Path>,
+    output_dir: impl AsRef<Path>,
+) -> eyre::Result<()> {
+    let input_dir = input_dir.as_ref().canonicalize().context(format!(
         "Failed to canonicalize input path: {}",
-        input.as_ref().display()
+        input_dir.as_ref().display()
     ))?;
+    let output_dir = output_dir.as_ref();
 
-    let wconsole = request_wwise_console()?;
-    let project = wconsole.acquire_temp_project()?;
-
-    let input_dir = input.parent().unwrap();
-    let input_file = input.file_name().unwrap();
+    // create wsource
     let mut source = WwiseSource::new(input_dir.to_str().unwrap());
-    source.add_source(input_file.to_str().unwrap());
-    project.convert_external_source(&source, input_dir.to_str().unwrap())?;
-
-    // mv to root
-    let output_dir = input_dir.join("Windows");
-    for entry in output_dir.read_dir()? {
-        let entry = entry?;
+    let read_dir = input_dir
+        .read_dir()
+        .context("Failed to read input directory")?;
+    for entry in read_dir {
+        let entry = entry.context("Failed to read input directory entry")?;
         let path = entry.path();
-        if path.is_file() {
-            fs::copy(
-                &path,
-                input_dir.parent().unwrap().join(path.file_name().unwrap()),
-            )?;
+        if !path.is_file() {
+            continue;
         }
+        source.add_source(path.to_str().unwrap());
     }
-
-    Ok(())
-}
-
-fn main_entry() -> eyre::Result<()> {
-    let args = env::args().collect::<Vec<_>>();
-    if args.len() < 2 {
-        eyre::bail!("Usage: {} <input> ...", args[0]);
-    }
-
-    // config init
-    {
-        let mut config = Config::global().lock();
-        if config.get_bin_config("ffmpeg").is_none() {
-            if let Ok(ffmpeg) = FFmpegCli::new() {
-                config.set_bin_config("ffmpeg", ffmpeg.program_path().to_string_lossy().as_ref());
-            }
+    // convert
+    wproject
+        .convert_external_source(&source, output_dir.to_str().unwrap())
+        .context("Failed to convert to wem")?;
+    // mv to root
+    let ww_output_dir = output_dir.join("Windows");
+    let read_dir = ww_output_dir
+        .read_dir()
+        .context("Failed to read output directory")?;
+    for entry in read_dir {
+        let entry = entry.context("Failed to read output directory entry")?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
         }
-        if config.get_bin_config("WwiseConsole").is_none() {
-            if let Ok(wwise_console) = WwiseConsole::new() {
-                config.set_bin_config(
-                    "WwiseConsole",
-                    wwise_console.program_path().to_string_lossy().as_ref(),
-                );
-            }
-        }
+        let to = output_dir.join(path.file_name().unwrap());
+        println!("{}: {}", "Output".cyan().bold(), to.display());
+        fs::copy(&path, to)?;
     }
-
-    let input_paths = args[1..].iter().map(Path::new).collect::<Vec<_>>();
-
-    for path in input_paths {
-        if !path.exists() {
-            eyre::bail!("File or directory not found: {}", path.display())
-        }
-        if path.is_dir() {
-            let output_root = path.parent().unwrap_or(Path::new("."));
-            handle_project(path, output_root)?;
-        } else {
-            let file = File::open(path)?;
-            let mut reader = io::BufReader::new(file);
-            let mut magic = [0; 4];
-            reader.read_exact(&mut magic)?;
-            reader.seek(io::SeekFrom::Start(0))?;
-            if &magic == b"BKHD" {
-                // bnk file
-                println!("{}: {}", "Wwise Sound Bank".green(), path.display());
-                let bank = bnk::Bnk::from_reader(&mut reader)
-                    .map_err(|e| eyre::Report::new(e))
-                    .context("Failed to parse bank")?;
-                let mut bank_dump_output = path.to_string_lossy().to_string();
-                bank_dump_output.push_str(".project");
-                fs::create_dir_all(&bank_dump_output)?;
-                dump_bank(&bank, &bank_dump_output).context("Failed to dump bank")?;
-                // 创建project.json
-                let project_data = SoundToolProject::Bnk(BnkProject {
-                    metadata_file: "bank.json".to_string(),
-                    source_file_name: path.file_name().unwrap().to_string_lossy().to_string(),
-                });
-                create_project_metadata(&bank_dump_output, &project_data)?;
-            } else if &magic == b"AKPK" {
-                // pck file
-                println!("{}: {}", "Wwise PCK".green(), path.display());
-                let mut output_path = path.to_string_lossy().to_string();
-                output_path.push_str(".project");
-                fs::create_dir_all(&output_path)?;
-                dump_pck(reader, &output_path).context("Failed to dump PCK")?;
-                // 创建project.json
-                let project_data = SoundToolProject::Pck(PckProject {
-                    metadata_file: "pck.json".to_string(),
-                    source_file_name: path.file_name().unwrap().to_string_lossy().to_string(),
-                });
-                create_project_metadata(&output_path, &project_data)?;
-            } else {
-                // magic not match, other file type
-                let file_ext = path.extension().unwrap_or_default().to_string_lossy();
-                match file_ext.as_ref() {
-                    "mp3" | "ogg" | "aac" => {
-                        // transcode to wav, and to wem
-                        let ffmpeg = request_ffmpeg()?;
-                        let ff_out_dir = Path::new("sound-tool-temp");
-                        if !ff_out_dir.exists() {
-                            fs::create_dir_all(ff_out_dir)?;
-                        }
-                        let ff_out_file = ff_out_dir.join(path.file_name().unwrap());
-                        ffmpeg.simple_transcode(path, &ff_out_file)?;
-                        // to wem
-                        single_file_to_wem(&ff_out_file)?;
-                    }
-                    "wav" => {
-                        // to wem
-                        single_file_to_wem(path)?;
-                    }
-                    _ => {
-                        eyre::bail!("Unsupported input file type: {}", path.display());
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn main() -> eyre::Result<()> {
-    println!(
-        "{} v{}{}",
-        "MHWS Sound Tool".magenta().bold(),
-        env!("CARGO_PKG_VERSION"),
-        " - by @Eigeen".dimmed()
-    );
-
-    if let Err(e) = main_entry() {
-        println!("{}{:#}", "Error: ".red(), e);
-    }
-    wait_for_exit();
+    // remove ww_output_dir "Windows"
+    let _ = fs::remove_dir_all(&ww_output_dir);
 
     Ok(())
 }
 
 fn wait_for_exit() {
-    let _: String = Input::new()
-        .allow_empty(true)
-        .with_prompt("Press Enter to exit")
-        .interact()
-        .unwrap();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_wem_name_regex() {
-        let cases = [
-            ("[001]12345678.wem", (1, 12345678)),
-            ("[012]98765432.wem", (12, 98765432)),
-            ("[999]99999999.wem", (999, 99999999)),
-            ("[000]00000000.wem", (0, 0)),
-        ];
-        for (name, expected) in cases {
-            let captures = REG_WEM_NAME.captures(name).unwrap();
-            let idx = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
-            let id = captures.get(2).unwrap().as_str().parse::<u32>().unwrap();
-            assert_eq!(idx, expected.0);
-            assert_eq!(id, expected.1);
-        }
+    if INTERACTIVE_MODE.load(atomic::Ordering::SeqCst) {
+        let _: String = Input::new()
+            .allow_empty(true)
+            .with_prompt("Press Enter to exit")
+            .interact()
+            .unwrap();
     }
 }
