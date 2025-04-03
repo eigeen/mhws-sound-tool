@@ -6,6 +6,7 @@ use std::{
     sync::LazyLock,
 };
 
+use colored::Colorize;
 use eyre::Context;
 use indexmap::IndexMap;
 use log::{info, warn};
@@ -241,7 +242,6 @@ impl BnkProject {
         let mut bank: bnk::Bnk = serde_json::from_str(&bank_meta_content)?;
 
         // 导出bnk
-
         // 读取wem
         let mut wem_files = vec![];
         for entry in fs::read_dir(&self.project_path)? {
@@ -274,12 +274,20 @@ impl BnkProject {
         for wem in wem_files.iter_mut() {
             if let Some(rep_data) = replace_data.get(&IdOrIndex::Index(wem.idx)) {
                 wem.data = rep_data.clone();
-                info!("Replace: Wem file [{}] replaced by index.", wem.idx);
+                info!(
+                    "{}: Wem file [{}] replaced by index.",
+                    "Replace".cyan(),
+                    wem.idx
+                );
                 continue;
             }
-            if let Some(rep_id) = replace_data.get(&IdOrIndex::Id(wem.id)) {
-                wem.data = rep_id.clone();
-                info!("Replace: Wem file '{}' replaced by ID.", wem.id);
+            if let Some(rep_data) = replace_data.get(&IdOrIndex::Id(wem.id)) {
+                wem.data = rep_data.clone();
+                info!(
+                    "{}: Wem file '{}' replaced by ID.",
+                    "Replace".cyan(),
+                    wem.id
+                );
                 continue;
             }
         }
@@ -359,7 +367,8 @@ impl PckProject {
         struct WemMetadata {
             idx: u32,
             file_size: u32,
-            file_path: String,
+            file_path: Option<String>,
+            data: Option<Vec<u8>>,
         }
         let mut wem_metadata_map = IndexMap::new();
         for entry in fs::read_dir(&self.project_path)? {
@@ -377,10 +386,38 @@ impl PckProject {
                 WemMetadata {
                     idx,
                     file_size: path.metadata()?.len() as u32,
-                    file_path: path.to_string_lossy().to_string(),
+                    file_path: Some(path.to_string_lossy().to_string()),
+                    data: None,
                 },
             );
         }
+        // 读取replace
+        let replace_root = self.project_path.join("replace");
+        let replace_data = if replace_root.is_dir() {
+            load_replace_files(replace_root).context("Failed to load replace files")?
+        } else {
+            HashMap::new()
+        };
+        // 应用replace
+        for (&id, wem) in wem_metadata_map.iter_mut() {
+            if let Some(rep_data) = replace_data.get(&IdOrIndex::Index(wem.idx)) {
+                wem.file_path = None;
+                wem.data = Some(rep_data.clone());
+                info!(
+                    "{}: Wem file [{}] replaced by index.",
+                    "Replace".cyan(),
+                    wem.idx
+                );
+                continue;
+            }
+            if let Some(rep_data) = replace_data.get(&IdOrIndex::Id(id)) {
+                wem.file_path = None;
+                wem.data = Some(rep_data.clone());
+                info!("{}: Wem file '{}' replaced by ID.", "Replace".cyan(), id);
+                continue;
+            }
+        }
+
         wem_metadata_map.sort_unstable_by(|_, value_a, _, value_b| value_a.idx.cmp(&value_b.idx));
         // 更新header中的原始wem entries
         // 移除无效wem entries
@@ -428,9 +465,17 @@ impl PckProject {
         pck_header.write_to(&mut writer)?;
         // 写入wem
         for metadata in wem_metadata_map.values() {
-            let file_path = Path::new(&metadata.file_path);
-            let mut input_file = File::open(file_path)?;
-            io::copy(&mut input_file, &mut writer)?;
+            if let Some(data) = &metadata.data {
+                writer.write_all(data)?;
+            } else if let Some(file_path) = &metadata.file_path {
+                let mut input_file = File::open(file_path)?;
+                io::copy(&mut input_file, &mut writer)?;
+            } else {
+                eyre::bail!(
+                    "Internal: both data and file_path are None for Wem file: {}",
+                    metadata.idx
+                );
+            }
         }
 
         info!("Output: {}", output_path);
