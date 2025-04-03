@@ -613,6 +613,9 @@ fn load_replace_files(replace_root: impl AsRef<Path>) -> eyre::Result<HashMap<Id
 mod tests {
     use super::*;
 
+    const TEST_BNK: &str = "test_files/Wp00_Cmn_m.sbnk.1.X64";
+    const TEST_PCK: &str = "test_files/Cat_cmn_m.spck.1.X64";
+
     #[test]
     fn test_wem_name_regex() {
         let cases = [
@@ -632,43 +635,81 @@ mod tests {
 
     #[test]
     fn test_dump_bnk() {
-        SoundToolProject::dump_bnk("test_files/Wp00_Cmn_m.sbnk.1.X64", "test_files").unwrap();
-        assert!(Path::new("test_files/Wp00_Cmn_m.sbnk.1.X64.project/project.json").is_file());
-        assert!(Path::new("test_files/Wp00_Cmn_m.sbnk.1.X64.project/bank.json").is_file());
-        fs::remove_dir_all("test_files/Wp00_Cmn_m.sbnk.1.X64.project").unwrap();
+        SoundToolProject::dump_bnk(TEST_BNK, "test_files").unwrap();
+        let project_path = format!("{}.project", TEST_BNK);
+        let project_path = Path::new(&project_path);
+        assert!(project_path.join("project.json").is_file());
+        assert!(project_path.join("bank.json").is_file());
+        fs::remove_dir_all(project_path).unwrap();
     }
 
     #[test]
     fn test_dump_pck() {
-        SoundToolProject::dump_pck("test_files/Cat_cmn_m.spck.1.X64", "test_files").unwrap();
-        assert!(Path::new("test_files/Cat_cmn_m.spck.1.X64.project/project.json").is_file());
-        assert!(Path::new("test_files/Cat_cmn_m.spck.1.X64.project/pck.json").is_file());
-        fs::remove_dir_all("test_files/Cat_cmn_m.spck.1.X64.project").unwrap();
+        SoundToolProject::dump_pck(TEST_PCK, "test_files").unwrap();
+        let project_path = format!("{}.project", TEST_PCK);
+        let project_path = Path::new(&project_path);
+        assert!(project_path.join("project.json").is_file());
+        assert!(project_path.join("pck.json").is_file());
+        fs::remove_dir_all(project_path).unwrap();
     }
 
     #[test]
     fn test_repack_bnk() {
-        let path = "test_files/Wp00_Cmn_m.sbnk.1.X64".to_string();
-        SoundToolProject::dump_bnk(&path, "test_files").unwrap();
-        let mut project_path = path.clone();
-        project_path.push_str(".project");
-        let project = SoundToolProject::from_path(&project_path).unwrap();
+        SoundToolProject::dump_bnk(TEST_BNK, "test_files").unwrap();
+        let project_path = format!("{}.project", TEST_BNK);
+        let project_path = Path::new(&project_path);
+        let project = SoundToolProject::from_path(project_path).unwrap();
         project.repack("test_files").unwrap();
-        assert!(Path::new("test_files/Wp00_Cmn_m.sbnk.1.X64.new").is_file());
-        fs::remove_file("test_files/Wp00_Cmn_m.sbnk.1.X64.new").unwrap();
-        fs::remove_dir_all(&project_path).unwrap();
+        let output_path = format!("{}.new", TEST_BNK);
+        assert!(Path::new(&output_path).is_file());
+        fs::remove_file(&output_path).unwrap();
+        fs::remove_dir_all(project_path).unwrap();
     }
 
     #[test]
     fn test_repack_pck() {
-        let path = "test_files/Cat_cmn_m.spck.1.X64".to_string();
-        SoundToolProject::dump_pck(&path, "test_files").unwrap();
-        let mut project_path = path.clone();
-        project_path.push_str(".project");
-        let project = SoundToolProject::from_path(&project_path).unwrap();
+        SoundToolProject::dump_pck(TEST_PCK, "test_files").unwrap();
+        let project_path = format!("{}.project", TEST_PCK);
+        let project_path = Path::new(&project_path);
+        let project = SoundToolProject::from_path(project_path).unwrap();
         project.repack("test_files").unwrap();
-        assert!(Path::new("test_files/Cat_cmn_m.spck.1.X64.new").is_file());
-        fs::remove_file("test_files/Cat_cmn_m.spck.1.X64.new").unwrap();
-        fs::remove_dir_all(&project_path).unwrap();
+        let output_path = format!("{}.new", TEST_PCK);
+        assert!(Path::new(&output_path).is_file());
+        fs::remove_file(&output_path).unwrap();
+        fs::remove_dir_all(project_path).unwrap();
+    }
+
+    #[test]
+    fn test_bnk_replace() {
+        // unpack
+        SoundToolProject::dump_bnk(TEST_BNK, "test_files").unwrap();
+        let project_path = format!("{}.project", TEST_BNK);
+        let project_path = Path::new(&project_path);
+        // create replace
+        let replace_dir = project_path.join("replace");
+        fs::create_dir(&replace_dir).unwrap();
+        fs::copy("test_files/test_sound.mp3", replace_dir.join("8242880.mp3")).unwrap(); // [1]
+        fs::copy("test_files/test_sound.mp3", replace_dir.join("[3].mp3")).unwrap();
+        let original_01_wem_data = fs::read(project_path.join("[001]8242880.wem")).unwrap();
+        // repack
+        let project = SoundToolProject::from_path(project_path).unwrap();
+        project.repack("test_files").unwrap();
+        let new_bnk_path = format!("{}.new", TEST_BNK);
+        // unpack again
+        SoundToolProject::dump_bnk(&new_bnk_path, "test_files").unwrap();
+        let new_project_path = format!("{}.project", new_bnk_path);
+        let new_project_path = Path::new(&new_project_path);
+
+        let unpack_replaced_wem = new_project_path.join("[001]8242880.wem");
+        let new_data_01 = fs::read(unpack_replaced_wem).unwrap();
+        assert_ne!(new_data_01, original_01_wem_data);
+
+        let unpack_replaced_wem = new_project_path.join("[003]16088711.wem");
+        let new_data_03 = fs::read(unpack_replaced_wem).unwrap();
+        assert_eq!(new_data_03, new_data_01);
+
+        fs::remove_file(&new_bnk_path).unwrap();
+        fs::remove_dir_all(new_project_path).unwrap();
+        fs::remove_dir_all(project_path).unwrap();
     }
 }

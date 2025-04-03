@@ -310,7 +310,7 @@ mod tests {
         let root_str = root.to_str().unwrap();
         let project = console.acquire_temp_project().unwrap();
         let mut source = WwiseSource::new(root_str);
-        source.add_source("[001]3591844.wav");
+        source.add_source("test_sound.wav");
         project.convert_external_source(&source, root_str).unwrap();
     }
 }

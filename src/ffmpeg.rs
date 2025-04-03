@@ -136,9 +136,10 @@ mod tests {
         let ffmpeg_cli = FFmpegCli::new().unwrap();
         ffmpeg_cli
             .simple_transcode(
-                "test_files/[001]3591844.mp3",
+                "test_files/test_sound.mp3",
                 "test_files/simple_transcode_output.wav",
             )
             .unwrap();
+        assert!(Path::new("test_files/simple_transcode_output.wav").is_file());
     }
 }

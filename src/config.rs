@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use eyre::Context;
-use log::error;
+use log::{error, warn};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -19,19 +19,22 @@ pub struct Config {
 
 impl Config {
     fn init_load() -> Config {
-        load_config(CONFIG_PATH)
+        let mut config = load_config(CONFIG_PATH);
+        if let Err(e) = config.initialize() {
+            warn!("Failed to initialize config: {}", e);
+        }
+        config
     }
 
-    pub fn initialize() -> eyre::Result<()> {
-        let mut config = Config::global().lock();
-        if config.get_bin_config("ffmpeg").is_none() {
+    pub fn initialize(&mut self) -> eyre::Result<()> {
+        if self.get_bin_config("ffmpeg").is_none() {
             if let Ok(ffmpeg) = FFmpegCli::new() {
-                config.set_bin_config("ffmpeg", ffmpeg.program_path().to_string_lossy().as_ref());
+                self.set_bin_config("ffmpeg", ffmpeg.program_path().to_string_lossy().as_ref());
             }
         }
-        if config.get_bin_config("WwiseConsole").is_none() {
+        if self.get_bin_config("WwiseConsole").is_none() {
             if let Ok(wwise_console) = WwiseConsole::new() {
-                config.set_bin_config(
+                self.set_bin_config(
                     "WwiseConsole",
                     wwise_console.program_path().to_string_lossy().as_ref(),
                 );

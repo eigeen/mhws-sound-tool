@@ -1,0 +1,6 @@
+version = 1
+
+[[bin]]
+name = "ffmpeg"
+path = "ffmpeg.exe"
+params = []

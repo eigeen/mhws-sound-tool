@@ -183,9 +183,6 @@ fn panic_hook(info: &std::panic::PanicHookInfo) {
 }
 
 fn main_entry() -> eyre::Result<()> {
-    // config init
-    Config::initialize().context("Failed to initialize config")?;
-
     // drag and drop support, try to detect if all params are file paths
     let args = env::args().collect::<Vec<_>>();
     if args.len() < 2 {
