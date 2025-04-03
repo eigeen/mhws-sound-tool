@@ -96,8 +96,8 @@ File structure example:
 ```
 <.project>
 ├── replace
-│   ├── [0].wem       # Replaces [000]123456.wem
-│   └── 2345678.wem   # Replaces [001]2345678.wem
+│   ├── [0].wav       # Replaces [000]123456.wem
+│   └── 2345678.mp3   # Replaces [001]2345678.wem
 ├── [000]123456.wem
 ├── [001]2345678.wem
 ├── ...
