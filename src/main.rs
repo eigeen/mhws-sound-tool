@@ -22,7 +22,10 @@ use eyre::Context;
 use log::{error, info};
 use project::SoundToolProject;
 
+#[cfg(not(test))]
 static INTERACTIVE_MODE: AtomicBool = AtomicBool::new(true);
+#[cfg(test)]
+static INTERACTIVE_MODE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Parser)]
 struct Cli {
