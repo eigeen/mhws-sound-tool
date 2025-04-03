@@ -67,6 +67,7 @@ impl SoundToolProject {
             .to_string_lossy()
             .to_string();
         project_path.push_str(".project");
+        let project_path = PathBuf::from(project_path);
         fs::create_dir_all(&project_path).context("Failed to create project directory")?;
 
         // dump bnk data
@@ -91,7 +92,7 @@ impl SoundToolProject {
                             } else {
                                 format!("[{:04}]{}.wem", idx, entry.id)
                             };
-                            let file_path = output_root.join(file_name);
+                            let file_path = project_path.join(file_name);
                             let mut file = File::create(&file_path)
                                 .context("Failed to create wem output file")
                                 .context(format!("Path: {}", file_path.display()))?;
@@ -112,7 +113,7 @@ impl SoundToolProject {
                 bnk::SectionPayload::Didx { .. } | bnk::SectionPayload::Data { .. }
             )
         });
-        let meta_bank_path = output_root.join("bank.json");
+        let meta_bank_path = project_path.join("bank.json");
         println!(
             "{}: {}",
             "Metadata".green().dimmed(),
@@ -187,8 +188,6 @@ impl SoundToolProject {
             .context(format!("Path: {}", meta_pck_path.display()))?;
         let mut writer = io::BufWriter::new(&mut meta_pck_file);
         serde_json::to_writer(&mut writer, &pck).context("Failed to write pck meta to file")?;
-
-        println!("{}: {}", "Export".cyan(), project_path.display());
 
         // 创建project
         let this = Self::Pck(PckProject {
@@ -318,7 +317,7 @@ impl BnkProject {
         let mut writer = io::BufWriter::new(output_file);
         bank.write_to(&mut writer)?;
 
-        println!("{}: {}", "Export".cyan(), output_path);
+        println!("{}: {}", "Output".cyan(), output_path);
 
         Ok(())
     }
@@ -423,7 +422,7 @@ impl PckProject {
             io::copy(&mut input_file, &mut writer)?;
         }
 
-        println!("{}: {}", "Export".cyan(), output_path);
+        println!("{}: {}", "Output".cyan(), output_path);
 
         Ok(())
     }
@@ -463,5 +462,47 @@ mod tests {
             assert_eq!(idx, expected.0);
             assert_eq!(id, expected.1);
         }
+    }
+
+    #[test]
+    fn test_dump_bnk() {
+        SoundToolProject::dump_bnk("test_files/Wp00_Cmn_m.sbnk.1.X64", "test_files").unwrap();
+        assert!(Path::new("test_files/Wp00_Cmn_m.sbnk.1.X64.project/project.json").is_file());
+        assert!(Path::new("test_files/Wp00_Cmn_m.sbnk.1.X64.project/bank.json").is_file());
+        fs::remove_dir_all("test_files/Wp00_Cmn_m.sbnk.1.X64.project").unwrap();
+    }
+
+    #[test]
+    fn test_dump_pck() {
+        SoundToolProject::dump_pck("test_files/Cat_cmn_m.spck.1.X64", "test_files").unwrap();
+        assert!(Path::new("test_files/Cat_cmn_m.spck.1.X64.project/project.json").is_file());
+        assert!(Path::new("test_files/Cat_cmn_m.spck.1.X64.project/pck.json").is_file());
+        fs::remove_dir_all("test_files/Cat_cmn_m.spck.1.X64.project").unwrap();
+    }
+
+    #[test]
+    fn test_repack_bnk() {
+        let path = "test_files/Wp00_Cmn_m.sbnk.1.X64".to_string();
+        SoundToolProject::dump_bnk(&path, "test_files").unwrap();
+        let mut project_path = path.clone();
+        project_path.push_str(".project");
+        let project = SoundToolProject::from_path(&project_path).unwrap();
+        project.repack("test_files").unwrap();
+        assert!(Path::new("test_files/Wp00_Cmn_m.sbnk.1.X64.new").is_file());
+        fs::remove_file("test_files/Wp00_Cmn_m.sbnk.1.X64.new").unwrap();
+        fs::remove_dir_all(&project_path).unwrap();
+    }
+
+    #[test]
+    fn test_repack_pck() {
+        let path = "test_files/Cat_cmn_m.spck.1.X64".to_string();
+        SoundToolProject::dump_pck(&path, "test_files").unwrap();
+        let mut project_path = path.clone();
+        project_path.push_str(".project");
+        let project = SoundToolProject::from_path(&project_path).unwrap();
+        project.repack("test_files").unwrap();
+        assert!(Path::new("test_files/Cat_cmn_m.spck.1.X64.new").is_file());
+        fs::remove_file("test_files/Cat_cmn_m.spck.1.X64.new").unwrap();
+        fs::remove_dir_all(&project_path).unwrap();
     }
 }

@@ -150,6 +150,8 @@ impl InputFileType {
 }
 
 fn main() -> eyre::Result<()> {
+    std::panic::set_hook(Box::new(panic_hook));
+
     println!(
         "{} v{}{}",
         "MHWS Sound Tool".magenta().bold(),
@@ -163,6 +165,12 @@ fn main() -> eyre::Result<()> {
     wait_for_exit();
 
     Ok(())
+}
+
+fn panic_hook(info: &std::panic::PanicHookInfo) {
+    println!("{}: {:#?}", "Panic".red().bold(), info);
+    wait_for_exit();
+    std::process::exit(1);
 }
 
 fn main_entry() -> eyre::Result<()> {
