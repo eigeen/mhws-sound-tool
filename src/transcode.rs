@@ -4,9 +4,9 @@ use std::{
     sync::atomic,
 };
 
-use colored::Colorize;
 use dialoguer::{Input, theme::ColorfulTheme};
 use eyre::Context;
+use log::{debug, info, warn};
 
 use crate::{
     INTERACTIVE_MODE,
@@ -34,6 +34,7 @@ pub fn wavs_to_wem(input_dir: impl AsRef<Path>, output_dir: impl AsRef<Path>) ->
         if !path.is_file() {
             continue;
         }
+        debug!("Add source: {}", path.display());
         source.add_source(path.to_str().unwrap());
     }
     // convert
@@ -55,7 +56,7 @@ pub fn wavs_to_wem(input_dir: impl AsRef<Path>, output_dir: impl AsRef<Path>) ->
                 continue;
             }
             let to = output_dir.join(path.file_name().unwrap());
-            println!("{}: {}", "Output".cyan().bold(), to.display());
+            debug!("Output: {}", to.display());
             fs::copy(&path, to)?;
         }
         // remove ww_output_dir "Windows"
@@ -75,6 +76,7 @@ pub fn sounds_to_wav(inputs: &[impl AsRef<Path>]) -> eyre::Result<Vec<Vec<u8>>> 
         let file_stem = input.file_stem().unwrap().to_str().unwrap();
         let output_file_name = Path::new(file_stem).with_extension("wav");
         let output_path = tmp_dir.path().join(output_file_name);
+        debug!("Transcoding: {}", input.display());
         ffmpeg.simple_transcode(input, &output_path)?;
 
         let output_data =
@@ -96,10 +98,7 @@ fn require_ffmpeg() -> eyre::Result<FFmpegCli> {
         eyre::bail!("ffmpeg path is not set, and interactive mode is disabled.");
     }
 
-    println!(
-        "{}: ffmpeg path is not set, please setup in config.toml.",
-        "Warning".yellow().bold()
-    );
+    warn!("ffmpeg path is not set, please setup in config.toml.");
     let ffmpeg_path: String = Input::with_theme(&ColorfulTheme::default())
         .show_default(true)
         .default("ffmpeg.exe".to_string())
@@ -111,7 +110,7 @@ fn require_ffmpeg() -> eyre::Result<FFmpegCli> {
         .ok_or(eyre::eyre!("FFmpeg not found"))?;
     config.set_bin_config("ffmpeg", ffmpeg.program_path().to_string_lossy().as_ref());
     config.save();
-    println!("FFmpeg path saved to config.toml.");
+    info!("FFmpeg path saved to config.toml.");
 
     Ok(ffmpeg)
 }
@@ -128,10 +127,7 @@ fn require_wwise_console() -> eyre::Result<WwiseConsole> {
         eyre::bail!("WwiseConsole path is not set, and interactive mode is disabled.");
     }
 
-    println!(
-        "{}: WwiseConsole path is not set, please setup in config.toml.",
-        "Warning".yellow().bold()
-    );
+    warn!("WwiseConsole path is not set, please setup in config.toml.");
     let wconsole_path: String = Input::with_theme(&ColorfulTheme::default())
         .with_prompt("Input WwiseConsole.exe path")
         .interact_text()
@@ -143,7 +139,7 @@ fn require_wwise_console() -> eyre::Result<WwiseConsole> {
         wconsole.program_path().to_string_lossy().as_ref(),
     );
     config.save();
-    println!("WwiseConsole path saved to config.toml.");
+    info!("WwiseConsole path saved to config.toml.");
 
     Ok(wconsole)
 }

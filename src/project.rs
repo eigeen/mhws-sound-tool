@@ -6,9 +6,9 @@ use std::{
     sync::LazyLock,
 };
 
-use colored::Colorize;
 use eyre::Context;
 use indexmap::IndexMap;
+use log::{info, warn};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -115,11 +115,7 @@ impl SoundToolProject {
             )
         });
         let meta_bank_path = project_path.join("bank.json");
-        println!(
-            "{}: {}",
-            "Metadata".green().dimmed(),
-            meta_bank_path.display()
-        );
+        info!("Metadata: {}", meta_bank_path.display());
         let mut meta_bank_file = File::create(&meta_bank_path)
             .context("Failed to create bank meta file")
             .context(format!("Path: {}", meta_bank_path.display()))?;
@@ -133,8 +129,9 @@ impl SoundToolProject {
             source_file_name: source_name.to_string(),
             project_path: PathBuf::from(&project_path),
         });
-        this.write_project_metadata(project_path)
+        this.write_project_metadata(&project_path)
             .context("Failed to write project metadata")?;
+        info!("Output: {}", project_path.display());
 
         Ok(this)
     }
@@ -179,11 +176,7 @@ impl SoundToolProject {
 
         // 导出其余部分
         let meta_pck_path = project_path.join("pck.json");
-        println!(
-            "{}: {}",
-            "Metadata".green().dimmed(),
-            meta_pck_path.display()
-        );
+        info!("Metadata: {}", meta_pck_path.display());
         let mut meta_pck_file = File::create(&meta_pck_path)
             .context("Failed to create pck meta file")
             .context(format!("Path: {}", meta_pck_path.display()))?;
@@ -196,8 +189,9 @@ impl SoundToolProject {
             source_file_name: source_name.to_string(),
             project_path: project_path.clone(),
         });
-        this.write_project_metadata(project_path)
+        this.write_project_metadata(&project_path)
             .context("Failed to write project metadata")?;
+        info!("Output: {}", project_path.display());
 
         Ok(this)
     }
@@ -216,11 +210,7 @@ impl SoundToolProject {
     /// Create project metadata file `project.json`.
     fn write_project_metadata(&self, dir_path: impl AsRef<Path>) -> eyre::Result<()> {
         let metadata_path = dir_path.as_ref().join("project.json");
-        println!(
-            "{}: {}",
-            "Project".green().dimmed(),
-            metadata_path.display()
-        );
+        info!("Project Metadata: {}", metadata_path.display());
         let mut project_file = File::create(&metadata_path)
             .context("Failed to create project file")
             .context(format!("Path: {}", metadata_path.display()))?;
@@ -284,20 +274,12 @@ impl BnkProject {
         for wem in wem_files.iter_mut() {
             if let Some(rep_data) = replace_data.get(&IdOrIndex::Index(wem.idx)) {
                 wem.data = rep_data.clone();
-                println!(
-                    "{}: Wem file [{}] replaced by index.",
-                    "Replace".underline().bold(),
-                    wem.idx,
-                );
+                info!("Replace: Wem file [{}] replaced by index.", wem.idx);
                 continue;
             }
             if let Some(rep_id) = replace_data.get(&IdOrIndex::Id(wem.id)) {
                 wem.data = rep_id.clone();
-                println!(
-                    "{}: Wem file '{}' replaced by ID.",
-                    "Replace".underline().bold(),
-                    wem.id,
-                );
+                info!("Replace: Wem file '{}' replaced by ID.", wem.id);
                 continue;
             }
         }
@@ -348,7 +330,7 @@ impl BnkProject {
         let mut writer = io::BufWriter::new(output_file);
         bank.write_to(&mut writer)?;
 
-        println!("{}: {}", "Output".cyan(), output_path);
+        info!("Output: {}", output_path);
 
         Ok(())
     }
@@ -410,16 +392,14 @@ impl PckProject {
         }
         for i in drop_idx_list.iter().rev() {
             let entry = pck_header.wem_entries.remove(*i);
-            println!(
-                "{}: Wem file {} included in original PCK, but not found in project, removed.",
-                "Warning".yellow(),
+            warn!(
+                "Wem file {} included in original PCK, but not found in project, removed.",
                 entry.id
             );
         }
         if !drop_idx_list.is_empty() {
-            println!(
-                "{}: Wem count changed, will affect the original order ID, please use Wem unique ID as reference.",
-                "Warning".yellow()
+            warn!(
+                "Wem count changed, will affect the original order ID, please use Wem unique ID as reference."
             );
         }
         // 更新数据
@@ -453,7 +433,7 @@ impl PckProject {
             io::copy(&mut input_file, &mut writer)?;
         }
 
-        println!("{}: {}", "Output".cyan(), output_path);
+        info!("Output: {}", output_path);
 
         Ok(())
     }

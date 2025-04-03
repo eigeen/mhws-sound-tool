@@ -205,6 +205,7 @@ impl<'a> WwiseProject<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn project_path(&self) -> &Path {
         &self.project_path
     }

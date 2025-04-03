@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
-use colored::Colorize;
 use eyre::Context;
+use log::error;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -72,7 +72,7 @@ impl Config {
 
     pub fn save(&self) {
         if let Err(e) = self.try_save() {
-            println!("{}: Failed to save config: {}", "Error".red().bold(), e);
+            error!("Failed to save config: {}", e);
         }
     }
 }

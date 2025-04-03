@@ -19,6 +19,7 @@ use colored::Colorize;
 use config::Config;
 use dialoguer::Input;
 use eyre::Context;
+use log::{error, info};
 use project::SoundToolProject;
 
 static INTERACTIVE_MODE: AtomicBool = AtomicBool::new(true);
@@ -158,8 +159,17 @@ fn main() -> eyre::Result<()> {
         " - by @Eigeen".dimmed()
     );
 
+    // init logger
+    let mut builder = env_logger::builder();
+    if cfg!(feature = "log_info") {
+        builder.filter_level(log::LevelFilter::Info);
+    } else {
+        builder.filter_level(log::LevelFilter::Debug);
+    }
+    builder.format_timestamp(None).init();
+
     if let Err(e) = main_entry() {
-        println!("{}{:#}", "Error: ".red().bold(), e);
+        error!("{:#}", e);
     }
     wait_for_exit();
 
@@ -271,9 +281,9 @@ fn cli_main(cli: &Cli) -> eyre::Result<()> {
     }
     match &cli.command {
         Command::PackageProject(cmd) => {
-            println!("{}: {}", "Input".green().bold(), cmd.input);
+            info!("Input: {}", cmd.input);
             if let Some(output) = &cmd.output {
-                println!("{}: {}", "Output".green().bold(), output);
+                info!("Output: {}", output);
             }
             let project =
                 SoundToolProject::from_path(&cmd.input).context("Failed to load project")?;
@@ -296,9 +306,9 @@ fn cli_main(cli: &Cli) -> eyre::Result<()> {
             if !input.is_file() {
                 eyre::bail!("Input file not found: {}", input.display())
             }
-            println!("{}: {}", "Input".green().bold(), input.display());
+            info!("Input: {}", cmd.input);
             if let Some(output) = &cmd.output {
-                println!("{}: {}", "Output".green().bold(), output);
+                info!("Output: {}", output);
             }
             let output_root = cmd
                 .output
@@ -323,16 +333,16 @@ fn cli_main(cli: &Cli) -> eyre::Result<()> {
                 eyre::bail!("No input file specified.");
             }
             for input in &cmd.input {
-                println!("{}: {}", "Input".green().bold(), input);
+                info!("Input: {}", input);
             }
             if let Some(output) = &cmd.output {
-                println!("{}: {}", "Output".green().bold(), output);
+                info!("Output: {}", output);
             }
             if !cmd.wwise_console.is_empty() {
-                println!("{}: {}", "WwiseConsole".green().bold(), cmd.wwise_console);
+                info!("WwiseConsole: {}", cmd.wwise_console);
             }
             if let Some(ffmpeg) = &cmd.ffmpeg {
-                println!("{}: {}", "FFmpeg".green().bold(), ffmpeg);
+                info!("FFmpeg: {}", ffmpeg);
             }
             {
                 // sync config with cli args
@@ -370,7 +380,6 @@ fn cli_main(cli: &Cli) -> eyre::Result<()> {
                     fs::copy(input, &out_file)?;
                 } else {
                     // transcode to wav in temp dir
-                    println!("Transcoding: {}", input.display());
                     let mut data =
                         transcode::sounds_to_wav(&[input]).context("Failed to transcode to wav")?;
                     let data = data.pop().unwrap();
