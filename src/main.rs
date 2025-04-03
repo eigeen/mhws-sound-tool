@@ -3,6 +3,7 @@ mod config;
 mod ffmpeg;
 mod pck;
 mod project;
+mod transcode;
 mod utils;
 mod wwise;
 
@@ -16,11 +17,9 @@ use std::{
 use clap::Parser;
 use colored::Colorize;
 use config::Config;
-use dialoguer::{Input, theme::ColorfulTheme};
-use eyre::{Context, eyre};
-use ffmpeg::FFmpegCli;
+use dialoguer::Input;
+use eyre::Context;
 use project::SoundToolProject;
-use wwise::{WwiseConsole, WwiseProject, WwiseSource};
 
 static INTERACTIVE_MODE: AtomicBool = AtomicBool::new(true);
 
@@ -350,15 +349,16 @@ fn cli_main(cli: &Cli) -> eyre::Result<()> {
                 let first_file_dir = Path::new(&cmd.input[0]).parent().unwrap_or(Path::new("."));
                 first_file_dir.to_path_buf()
             });
-            let temp_dir = output_dir.join("temp");
-            if !temp_dir.exists() {
+            // create temp dir
+            let temp_dir = tempfile::tempdir()?;
+            let temp_dir = temp_dir.path().join("sound2wem");
+            if temp_dir.exists() {
+                fs::remove_dir_all(&temp_dir)?;
                 fs::create_dir_all(&temp_dir)?;
             } else {
-                let _ = fs::remove_dir_all(&temp_dir);
                 fs::create_dir_all(&temp_dir)?;
             }
             // transcode to wav in temp dir
-            let mut ffmpeg = None;
             for input in &cmd.input {
                 let input = Path::new(input);
                 if !input.is_file() {
@@ -370,140 +370,24 @@ fn cli_main(cli: &Cli) -> eyre::Result<()> {
                     fs::copy(input, &out_file)?;
                 } else {
                     // transcode to wav in temp dir
-                    let ffmpeg = if let Some(ffmpeg) = &ffmpeg {
-                        ffmpeg
-                    } else {
-                        let f = require_ffmpeg()?;
-                        ffmpeg = Some(f);
-                        ffmpeg.as_ref().unwrap()
-                    };
-                    let ff_out_file_name =
-                        Path::new(input.file_name().unwrap()).with_extension("wav");
-                    let ff_out_file = temp_dir.join(ff_out_file_name);
                     println!("Transcoding: {}", input.display());
-                    ffmpeg.simple_transcode(input, &ff_out_file)?;
+                    let mut data =
+                        transcode::sounds_to_wav(&[input]).context("Failed to transcode to wav")?;
+                    let data = data.pop().unwrap();
+                    // 写入临时文件
+                    let ff_out_file_name =
+                        Path::new(input.file_stem().unwrap()).with_extension("wav");
+                    let ff_out_file = temp_dir.join(ff_out_file_name);
+                    fs::write(&ff_out_file, &data).context(format!(
+                        "Failed to write transcoded data {}",
+                        ff_out_file.display()
+                    ))?;
                 }
             }
             // to wem
-            let ww_console = require_wwise_console()?;
-            let wproject = ww_console.acquire_temp_project()?;
-            files_to_wem(&wproject, &temp_dir, &output_dir)?;
-            // remove temp dir
-            let _ = fs::remove_dir_all(&temp_dir);
+            transcode::wavs_to_wem(&temp_dir, &output_dir)?;
         }
     }
-
-    Ok(())
-}
-
-/// Get ffmpeg instance from config, or update config with user input.
-fn require_ffmpeg() -> eyre::Result<FFmpegCli> {
-    let mut config = Config::global().lock();
-    if let Some(ffmpeg_config) = config.get_bin_config("ffmpeg") {
-        return FFmpegCli::new_with_path(PathBuf::from(&ffmpeg_config.path))
-            .ok_or(eyre::eyre!("FFmpeg not found"));
-    }
-    if !INTERACTIVE_MODE.load(atomic::Ordering::SeqCst) {
-        eyre::bail!("ffmpeg path is not set, and interactive mode is disabled.");
-    }
-
-    println!(
-        "{}: ffmpeg path is not set, please setup in config.toml.",
-        "Warning".yellow().bold()
-    );
-    let ffmpeg_path: String = Input::with_theme(&ColorfulTheme::default())
-        .show_default(true)
-        .default("ffmpeg.exe".to_string())
-        .with_prompt("Input ffmpeg path")
-        .interact_text()
-        .unwrap();
-    let ffmpeg_path = ffmpeg_path.trim_matches(['\"', '\'']);
-    let ffmpeg =
-        FFmpegCli::new_with_path(PathBuf::from(ffmpeg_path)).ok_or(eyre!("FFmpeg not found"))?;
-    config.set_bin_config("ffmpeg", ffmpeg.program_path().to_string_lossy().as_ref());
-    config.save();
-    println!("FFmpeg path saved to config.toml.");
-
-    Ok(ffmpeg)
-}
-
-/// Get wwise console instance from config, or update config with user input.
-fn require_wwise_console() -> eyre::Result<WwiseConsole> {
-    let mut config = Config::global().lock();
-    if let Some(wconsole_config) = config.get_bin_config("WwiseConsole") {
-        return Ok(WwiseConsole::new_with_path(PathBuf::from(
-            &wconsole_config.path,
-        ))?);
-    }
-    if !INTERACTIVE_MODE.load(atomic::Ordering::SeqCst) {
-        eyre::bail!("WwiseConsole path is not set, and interactive mode is disabled.");
-    }
-
-    println!(
-        "{}: WwiseConsole path is not set, please setup in config.toml.",
-        "Warning".yellow().bold()
-    );
-    let wconsole_path: String = Input::with_theme(&ColorfulTheme::default())
-        .with_prompt("Input WwiseConsole.exe path")
-        .interact_text()
-        .unwrap();
-    let wconsole_path = wconsole_path.trim_matches(['\"', '\'']);
-    let wconsole = WwiseConsole::new_with_path(PathBuf::from(wconsole_path))?;
-    config.set_bin_config(
-        "WwiseConsole",
-        wconsole.program_path().to_string_lossy().as_ref(),
-    );
-    config.save();
-    println!("WwiseConsole path saved to config.toml.");
-
-    Ok(wconsole)
-}
-
-fn files_to_wem(
-    wproject: &WwiseProject,
-    input_dir: impl AsRef<Path>,
-    output_dir: impl AsRef<Path>,
-) -> eyre::Result<()> {
-    let input_dir = input_dir.as_ref().canonicalize().context(format!(
-        "Failed to canonicalize input path: {}",
-        input_dir.as_ref().display()
-    ))?;
-    let output_dir = output_dir.as_ref();
-
-    // create wsource
-    let mut source = WwiseSource::new(input_dir.to_str().unwrap());
-    let read_dir = input_dir
-        .read_dir()
-        .context("Failed to read input directory")?;
-    for entry in read_dir {
-        let entry = entry.context("Failed to read input directory entry")?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        source.add_source(path.to_str().unwrap());
-    }
-    // convert
-    wproject
-        .convert_external_source(&source, output_dir.to_str().unwrap())
-        .context("Failed to convert to wem")?;
-    // mv to root
-    let ww_output_dir = output_dir.join("Windows");
-    let read_dir = ww_output_dir
-        .read_dir()
-        .context("Failed to read output directory")?;
-    for entry in read_dir {
-        let entry = entry.context("Failed to read output directory entry")?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let to = output_dir.join(path.file_name().unwrap());
-        println!("{}: {}", "Output".cyan().bold(), to.display());
-        fs::copy(&path, to)?;
-    }
-    // remove ww_output_dir "Windows"
-    let _ = fs::remove_dir_all(&ww_output_dir);
 
     Ok(())
 }

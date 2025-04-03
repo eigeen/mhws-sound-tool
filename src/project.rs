@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{self, Write},
     path::{Path, PathBuf},
@@ -11,7 +12,7 @@ use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::{bnk, pck};
+use crate::{bnk, pck, transcode};
 
 // [001]12345678
 static REG_WEM_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[(\d+)\](\d+)").unwrap());
@@ -250,6 +251,7 @@ impl BnkProject {
         let mut bank: bnk::Bnk = serde_json::from_str(&bank_meta_content)?;
 
         // 导出bnk
+
         // 读取wem
         let mut wem_files = vec![];
         for entry in fs::read_dir(&self.project_path)? {
@@ -269,6 +271,35 @@ impl BnkProject {
             let (idx, id) = parse_wem_name(&file_stem)?;
             let data = fs::read(path)?;
             wem_files.push(WemInfo { idx, id, data });
+        }
+
+        // 读取replace
+        let replace_root = self.project_path.join("replace");
+        let replace_data = if replace_root.is_dir() {
+            load_replace_files(replace_root).context("Failed to load replace files")?
+        } else {
+            HashMap::new()
+        };
+        // 应用replace
+        for wem in wem_files.iter_mut() {
+            if let Some(rep_data) = replace_data.get(&IdOrIndex::Index(wem.idx)) {
+                wem.data = rep_data.clone();
+                println!(
+                    "{}: Wem file [{}] replaced by index.",
+                    "Replace".underline().bold(),
+                    wem.idx,
+                );
+                continue;
+            }
+            if let Some(rep_id) = replace_data.get(&IdOrIndex::Id(wem.id)) {
+                wem.data = rep_id.clone();
+                println!(
+                    "{}: Wem file '{}' replaced by ID.",
+                    "Replace".underline().bold(),
+                    wem.id,
+                );
+                continue;
+            }
         }
 
         wem_files.sort_by_key(|wem| wem.idx);
@@ -428,6 +459,35 @@ impl PckProject {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum IdOrIndex {
+    Id(u32),
+    Index(u32),
+}
+
+impl IdOrIndex {
+    fn from_str(s: &str) -> Option<Self> {
+        if s.starts_with('[') && s.ends_with(']') {
+            s[1..s.len() - 1].parse().ok().map(IdOrIndex::Index)
+        } else {
+            s.parse().ok().map(IdOrIndex::Id)
+        }
+    }
+
+    fn _to_string(&self) -> String {
+        match self {
+            IdOrIndex::Id(id) => id.to_string(),
+            IdOrIndex::Index(index) => format!("[{}]", index),
+        }
+    }
+}
+
+impl std::fmt::Display for IdOrIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self._to_string())
+    }
+}
+
 /// 解析Wem名，返回 (index, id)
 fn parse_wem_name(name: &str) -> eyre::Result<(u32, u32)> {
     let name = name.trim();
@@ -441,6 +501,87 @@ fn parse_wem_name(name: &str) -> eyre::Result<(u32, u32)> {
     } else {
         eyre::bail!("Bad Wem file name. {}", name)
     }
+}
+
+/// 加载replace目录下的替换文件，返回转码为wem后的文件数据。
+///
+/// <index, Data>
+fn load_replace_files(replace_root: impl AsRef<Path>) -> eyre::Result<HashMap<IdOrIndex, Vec<u8>>> {
+    let replace_root = replace_root.as_ref();
+
+    let tmp_dir = tempfile::tempdir()?.path().join("wem_transcode");
+    if tmp_dir.exists() {
+        fs::remove_dir_all(&tmp_dir)?;
+        fs::create_dir_all(&tmp_dir)?;
+    } else {
+        fs::create_dir_all(&tmp_dir)?;
+    }
+    let wem_out_dir = tmp_dir.join("output");
+    if !wem_out_dir.exists() {
+        fs::create_dir_all(&wem_out_dir)?;
+    }
+
+    let mut file_count = 0;
+    for entry in fs::read_dir(replace_root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_stem = path.file_stem().unwrap().to_string_lossy();
+        let file_stem = file_stem.trim();
+        let id_or_index = IdOrIndex::from_str(file_stem)
+            .ok_or(eyre::eyre!("Bad replace file name. {}", file_stem))?;
+
+        let file_ext = path.extension().unwrap_or_default().to_string_lossy();
+        if file_ext == "wem" {
+            // 无需转码
+            // 写入wem目录
+            let wem_file_path = wem_out_dir.join(path.file_name().unwrap());
+            fs::write(&wem_file_path, fs::read(&path)?).context("Failed to write WEM file")?;
+            file_count += 1;
+            continue;
+        }
+
+        let wav_data = if file_ext == "wav" {
+            // 无需转码wav
+            fs::read(&path)?
+        } else {
+            // 先转码，再读取
+            let data = transcode::sounds_to_wav(&[&path])
+                .context("Failed to transcode replace file to WAV")?;
+            data.into_iter().next().unwrap()
+        };
+        // 写入临时目录
+        let wav_file_path = tmp_dir.join(format!("{}.wav", id_or_index));
+        fs::write(&wav_file_path, wav_data).context("Failed to write transcoded WAV file")?;
+        file_count += 1;
+    }
+    if file_count == 0 {
+        return Ok(HashMap::new());
+    }
+
+    // 转码wem
+    transcode::wavs_to_wem(&tmp_dir, &wem_out_dir).context("Failed to transcode WAVs to WEMs")?;
+    // 读取wem数据
+    let mut replace_files = HashMap::new();
+    for entry in fs::read_dir(&wem_out_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().unwrap_or_default() != "wem" {
+            continue;
+        }
+        let file_stem = path.file_stem().unwrap().to_string_lossy();
+        let id_or_index = IdOrIndex::from_str(&file_stem)
+            .ok_or_else(|| eyre::eyre!("Internal: bad Wem file name. {}", file_stem))?;
+        let data = fs::read(&path)?;
+        replace_files.insert(id_or_index, data);
+    }
+
+    Ok(replace_files)
 }
 
 #[cfg(test)]
