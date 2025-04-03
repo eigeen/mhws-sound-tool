@@ -557,6 +557,15 @@ fn load_replace_files(replace_root: impl AsRef<Path>) -> eyre::Result<HashMap<Id
         let file_stem = file_stem.trim();
         let id_or_index = IdOrIndex::from_str(file_stem)
             .ok_or(eyre::eyre!("Bad replace file name. {}", file_stem))?;
+        // ID数值过小时警告，以防混淆顺序ID和唯一ID
+        if let IdOrIndex::Id(id) = id_or_index {
+            if id < 500 {
+                warn!(
+                    "Replace file ID '{}' is too small, did you mean to use order index?",
+                    id
+                );
+            }
+        }
 
         let file_ext = path.extension().unwrap_or_default().to_string_lossy();
         if file_ext == "wem" {
