@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io::{self, Write},
+    io::{self, Write, Seek},
     path::{Path, PathBuf},
     sync::LazyLock,
 };
@@ -159,6 +159,22 @@ impl SoundToolProject {
         fs::create_dir_all(&project_path).context("Failed to create project directory")?;
 
         // dump pck data
+        for i in 0..pck.bnk_entries.len() {
+            let entry = &pck.bnk_entries[i];
+            let file_name = if pck.bnk_entries.len() < 1000 {
+                format!("[{:03}]{}.bnk", i, entry.id)
+            } else {
+                format!("[{:04}]{}.bnk", i, entry.id)
+            };
+            let file_path = project_path.join(file_name);
+            let mut file = File::create(&file_path)
+                .context("Failed to create bnk output file")
+                .context(format!("Path: {}", file_path.display()))?;
+
+            let mut bnk_reader = pck.bnk_reader(&mut reader, i).unwrap();
+            io::copy(&mut bnk_reader, &mut file).context("Failed to write wem data to file")?;
+        }
+
         for i in 0..pck.wem_entries.len() {
             let entry = &pck.wem_entries[i];
             let file_name = if pck.wem_entries.len() < 1000 {
@@ -363,7 +379,33 @@ impl PckProject {
         let pck_header_content = fs::read_to_string(&pck_header_path)?;
         let mut pck_header: pck::PckHeader = serde_json::from_str(&pck_header_content)?;
 
-        // 读取wem信息
+        // create bnk metadata
+        struct BnkMetadata {
+            idx: u32,
+            file_size: u32,
+            file_path: Option<String>,
+            data: Option<Vec<u8>>,
+        }
+        let mut bnk_metadata_map = IndexMap::new();
+        for entry in fs::read_dir(&self.project_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() || path.extension().unwrap_or_default() != "bnk" {
+                continue;
+            }
+            let file_stem = path.file_stem().unwrap().to_string_lossy();
+            let (idx, id) = parse_wem_name(&file_stem)?;
+            bnk_metadata_map.insert(
+                id,
+                BnkMetadata {
+                    idx,
+                    file_size: path.metadata()?.len() as u32,
+                    file_path: Some(path.to_string_lossy().to_string()),
+                    data: None,
+                },
+            );
+        }
+        // create wem metadata
         struct WemMetadata {
             idx: u32,
             file_size: u32,
@@ -377,8 +419,6 @@ impl PckProject {
             if !path.is_file() || path.extension().unwrap_or_default() != "wem" {
                 continue;
             }
-
-            // 解析wem文件名
             let file_stem = path.file_stem().unwrap().to_string_lossy();
             let (idx, id) = parse_wem_name(&file_stem)?;
             wem_metadata_map.insert(
@@ -391,14 +431,14 @@ impl PckProject {
                 },
             );
         }
-        // 读取replace
+        // replace files
         let replace_root = self.project_path.join("replace");
         let replace_data = if replace_root.is_dir() {
             load_replace_files(replace_root).context("Failed to load replace files")?
         } else {
             HashMap::new()
         };
-        // 应用replace
+        // replace wems
         for (&id, wem) in wem_metadata_map.iter_mut() {
             if let Some(rep_data) = replace_data.get(&IdOrIndex::Index(wem.idx)) {
                 wem.file_path = None;
@@ -417,32 +457,61 @@ impl PckProject {
                 continue;
             }
         }
-
         wem_metadata_map.sort_unstable_by(|_, value_a, _, value_b| value_a.idx.cmp(&value_b.idx));
-        // 更新header中的原始wem entries
-        // 移除无效wem entries
-        let mut drop_idx_list = vec![];
-        for (i, entry) in pck_header.wem_entries.iter().enumerate() {
-            if !wem_metadata_map.contains_key(&entry.id) {
-                drop_idx_list.push(i);
+
+        // update header BNK entries
+        let mut drop_bnk_idx_list = vec![];
+        for (i, entry) in pck_header.bnk_entries.iter().enumerate() {
+            if !bnk_metadata_map.contains_key(&entry.id) {
+                drop_bnk_idx_list.push(i);
             }
         }
-        for i in drop_idx_list.iter().rev() {
+        for i in drop_bnk_idx_list.iter().rev() {
+            let entry = pck_header.bnk_entries.remove(*i);
+            warn!(
+                "BNK file {} included in original PCK, but not found in project, removed.",
+                entry.id
+            );
+        }
+        // update header WEM entries
+        let mut drop_wem_idx_list = vec![];
+        for (i, entry) in pck_header.wem_entries.iter().enumerate() {
+            if !wem_metadata_map.contains_key(&entry.id) {
+                drop_wem_idx_list.push(i);
+            }
+        }
+        for i in drop_wem_idx_list.iter().rev() {
             let entry = pck_header.wem_entries.remove(*i);
             warn!(
                 "Wem file {} included in original PCK, but not found in project, removed.",
                 entry.id
             );
         }
-        if !drop_idx_list.is_empty() {
+        if !drop_wem_idx_list.is_empty() || !drop_bnk_idx_list.is_empty() {
             warn!(
-                "Wem count changed, will affect the original order ID, please use Wem unique ID as reference."
+                "Entry count changed, will affect the original order ID, please use unique ID as reference."
             );
         }
-        // 更新数据
-        let mut offset = pck_header.get_wem_offset_start();
+        // calculate offsets and lengths
+        let mut offset = pck_header.get_data_offset_start();
+        for entry in pck_header.bnk_entries.iter_mut() {
+            let metadata = bnk_metadata_map.get(&entry.id).unwrap();
+            let alignment = entry.padding_block_size.max(1);
+            // alignment offset
+            if offset % alignment != 0 {
+                offset += alignment - (offset % alignment);
+            }
+            entry.offset = offset;
+            entry.length = metadata.file_size;
+            offset += metadata.file_size;
+        }
         for entry in pck_header.wem_entries.iter_mut() {
             let metadata = wem_metadata_map.get(&entry.id).unwrap();
+            let alignment = entry.padding_block_size.max(1);
+            // alignment offset
+            if offset % alignment != 0 {
+                offset += alignment - (offset % alignment);
+            }
             entry.offset = offset;
             entry.length = metadata.file_size;
             offset += metadata.file_size;
@@ -459,12 +528,48 @@ impl PckProject {
                 break;
             }
         }
-        // 导出pck header
+        // write header and data
         let output_file = File::create(&output_path)?;
         let mut writer = io::BufWriter::new(output_file);
         pck_header.write_to(&mut writer)?;
-        // 写入wem
-        for metadata in wem_metadata_map.values() {
+        // write BNK and WEM
+        for entry in &pck_header.bnk_entries {
+            // alignment
+            let alignment = entry.padding_block_size.max(1);
+            let cur_pos = writer.stream_position()? as u32;
+            if cur_pos % alignment != 0 {
+                let pad = alignment - (cur_pos % alignment);
+                writer.write_all(&vec![0u8; pad as usize])?;
+            }
+            // write data
+            let metadata = bnk_metadata_map.get(&entry.id).unwrap();
+            if let Some(data) = &metadata.data {
+                writer.write_all(data)?;
+            } else if let Some(file_path) = &metadata.file_path {
+                let mut input_file = File::open(file_path)?;
+                io::copy(&mut input_file, &mut writer)?;
+            } else {
+                eyre::bail!(
+                    "Internal: both data and file_path are None for BNK file: {}",
+                    metadata.idx
+                );
+            }
+          
+            let written = metadata.file_size;
+            if written < entry.length {
+                writer.write_all(&vec![0u8; (entry.length - written) as usize])?;
+            }
+        }
+        for entry in &pck_header.wem_entries {
+            // alignment
+            let alignment = entry.padding_block_size.max(1);
+            let cur_pos = writer.stream_position()? as u32;
+            if cur_pos % alignment != 0 {
+            let pad = alignment - (cur_pos % alignment);
+            writer.write_all(&vec![0u8; pad as usize])?;
+        }
+            // write data
+            let metadata = wem_metadata_map.get(&entry.id).unwrap();
             if let Some(data) = &metadata.data {
                 writer.write_all(data)?;
             } else if let Some(file_path) = &metadata.file_path {
@@ -475,6 +580,10 @@ impl PckProject {
                     "Internal: both data and file_path are None for Wem file: {}",
                     metadata.idx
                 );
+            }
+            let written = metadata.file_size;
+            if written < entry.length {
+                writer.write_all(&vec![0u8; (entry.length - written) as usize])?;
             }
         }
 
