@@ -460,6 +460,7 @@ impl PckProject {
         wem_metadata_map.sort_unstable_by(|_, value_a, _, value_b| value_a.idx.cmp(&value_b.idx));
 
         // update header BNK entries
+        info!("Updating BNK entries...");
         let mut drop_bnk_idx_list = vec![];
         for (i, entry) in pck_header.bnk_entries.iter().enumerate() {
             if !bnk_metadata_map.contains_key(&entry.id) {
@@ -474,6 +475,7 @@ impl PckProject {
             );
         }
         // update header WEM entries
+        print!("Updating WEM entries...");
         let mut drop_wem_idx_list = vec![];
         for (i, entry) in pck_header.wem_entries.iter().enumerate() {
             if !wem_metadata_map.contains_key(&entry.id) {
@@ -493,6 +495,7 @@ impl PckProject {
             );
         }
         // calculate offsets and lengths
+        info!("Calculating offsets and lengths for BNK and WEM entries...");
         let mut offset = pck_header.get_data_offset_start();
         for entry in pck_header.bnk_entries.iter_mut() {
             let metadata = bnk_metadata_map.get(&entry.id).unwrap();
@@ -501,8 +504,9 @@ impl PckProject {
             if offset % alignment != 0 {
                 offset += alignment - (offset % alignment);
             }
-            entry.offset = offset;
+            entry.offset = offset / alignment;
             entry.length = metadata.file_size;
+          
             offset += metadata.file_size;
         }
         for entry in pck_header.wem_entries.iter_mut() {
@@ -512,11 +516,12 @@ impl PckProject {
             if offset % alignment != 0 {
                 offset += alignment - (offset % alignment);
             }
-            entry.offset = offset;
+            entry.offset = offset / alignment;
             entry.length = metadata.file_size;
+            
             offset += metadata.file_size;
         }
-
+        info!("Writing PCK header and data...");
         let mut output_path = output_root
             .join(&self.source_file_name)
             .to_string_lossy()
