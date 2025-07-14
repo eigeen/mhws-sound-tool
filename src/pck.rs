@@ -23,8 +23,8 @@ pub struct PckHeader {
     pub header_length: u32,
     pub version: u32,
     pub string_table: Vec<PckString>,
-    pub bnk_entries: Vec<PcFileEntry>,
-    pub wem_entries: Vec<PcFileEntry>,
+    pub bnk_entries: Vec<PckFileEntry>,
+    pub wem_entries: Vec<PckFileEntry>,
     pub external_entries: Vec<u32>,
     #[serde(skip)]
     bnk_positions: Vec<u32>,
@@ -88,7 +88,7 @@ impl PckHeader {
         for _ in 0..bnk_count {
             let mut buf = [0u8; 20];
             reader.read_exact(&mut buf)?;
-            let entry: PcFileEntry = unsafe { std::mem::transmute(buf) };
+            let entry: PckFileEntry = unsafe { std::mem::transmute(buf) };
             bnk_entries.push(entry);
         }
 
@@ -97,7 +97,7 @@ impl PckHeader {
         for _ in 0..wem_count {
             let mut buf = [0u8; 20];
             reader.read_exact(&mut buf)?;
-            let entry: PcFileEntry = unsafe { std::mem::transmute(buf) };
+            let entry: PckFileEntry = unsafe { std::mem::transmute(buf) };
             wem_entries.push(entry);
         }
 
@@ -123,7 +123,7 @@ impl PckHeader {
     }
 
     fn calculate_file_positions(&mut self) {
-        let mut all_entries: Vec<(PcFileEntry, FileType)> = self
+        let mut all_entries: Vec<(PckFileEntry, FileType)> = self
             .bnk_entries
             .iter()
             .map(|e| (e.clone(), FileType::Bnk))
@@ -275,12 +275,12 @@ impl PckHeader {
     }
 
     fn bnk_table_size(&self) -> usize {
-        4 + self.bnk_entries.len() * size_of::<PcFileEntry>()
+        4 + self.bnk_entries.len() * size_of::<PckFileEntry>()
     }
 
     fn wem_table_size(&self) -> usize {
         // entries_count(val) + entries_size
-        4 + self.wem_entries.len() * size_of::<PcFileEntry>()
+        4 + self.wem_entries.len() * size_of::<PckFileEntry>()
     }
 
     fn external_entries_size(&self) -> usize {
@@ -301,7 +301,7 @@ impl PckHeader {
 
 #[repr(C)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PcFileEntry {
+pub struct PckFileEntry {
     pub id: u32,
     pub padding_block_size: u32,
     pub length: u32,
@@ -317,7 +317,7 @@ pub struct PckString {
 
 pub struct PckFileReader<'a, R> {
     reader: R,
-    entry: &'a PcFileEntry,
+    entry: &'a PckFileEntry,
     start_pos: u64,
     read_size: usize,
 }
@@ -326,7 +326,7 @@ impl<'a, R> PckFileReader<'a, R>
 where
     R: io::Read + io::Seek,
 {
-    fn new(reader: R, entry: &'a PcFileEntry, start_pos: u64) -> Self {
+    fn new(reader: R, entry: &'a PckFileEntry, start_pos: u64) -> Self {
         PckFileReader {
             reader,
             entry,
